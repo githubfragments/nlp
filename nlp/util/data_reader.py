@@ -297,19 +297,18 @@ class DataReader:
 
 class Dataset(object):
     def __init__(self, word_vocab, char_vocab, file_pattern, batch_size, 
-                 num_unroll_steps, max_word_length, seed=None):
+                 num_unroll_steps, max_word_length, shuf=True):
         self._word_vocab = word_vocab
         self._char_vocab = char_vocab
         self._file_pattern = file_pattern
         self._batch_size = batch_size
         self._num_unroll_steps = num_unroll_steps
         self._max_word_length = max_word_length
+        self._shuf = shuf
         self.num_shards = None
         self.bps = None
         self.wpb = None
         self.prev_file = ''
-        if seed:
-            seed_random(seed)
     
     def length(self):
         if not self.num_shards is None and not self.bps is None:
@@ -325,7 +324,8 @@ class Dataset(object):
         file_names = glob.glob(self._file_pattern)
         if self.num_shards is None:
             self.num_shards = len(file_names)
-        random.shuffle(file_names)
+        if self._shuf:
+            random.shuffle(file_names)
         for file_name in file_names:
             yield file_name
             
@@ -333,7 +333,8 @@ class Dataset(object):
         while True:
             for file in self.file_stream():
                 self.cur_file = file
-                word_tensors, char_tensors = load_shard(file, self._word_vocab, self._char_vocab, self._max_word_length)
+                word_tensors, char_tensors = load_shard(file, self._word_vocab, self._char_vocab, 
+                                                        self._max_word_length, shuf=self._shuf)
                 shard_reader = DataReader(word_tensors, char_tensors, self._batch_size, self._num_unroll_steps)
                 if self.bps is None:
                     self.bps = shard_reader.length
