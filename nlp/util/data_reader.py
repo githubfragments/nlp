@@ -341,6 +341,7 @@ class Dataset(object):
     
     def file_stream(self):
         file_names = glob.glob(self._file_pattern)
+        file_names.sort()
         if self.num_shards is None:
             self.num_shards = len(file_names)
         if self._seed==0:
