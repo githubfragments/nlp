@@ -14,7 +14,7 @@ ALL_CHARS = True
 
 def seed_random(seed):
     random.seed(seed)
-    np.random.seed(seed=seed)
+    np.random.seed(seed=int(seed*100000))
     
 def get_hostname():
     import socket
