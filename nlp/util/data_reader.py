@@ -9,12 +9,23 @@ import pandas as pd
 import random
 import glob
 import pickle
+import time
 
 ALL_CHARS = True
 
-def seed_random(seed):
+def get_seed(verbose=True):
+    t = int( time.time() * 1000.0 )
+    seed = ((t & 0xff000000) >> 24) + ((t & 0x00ff0000) >>  8) + ((t & 0x0000ff00) <<  8) + ((t & 0x000000ff) << 24)
+    if verbose:
+        print('RANDOM SEED == ', seed)
+    return seed
+    
+def seed_random(seed=None):
+    if seed==None or seed<=0:
+        seed = get_seed()
     random.seed(seed)
-    np.random.seed(seed=int(seed*100000))
+    np.random.seed(seed=seed)
+    return seed
     
 def get_hostname():
     import socket
@@ -206,10 +217,11 @@ def load_shard(shard_file, word_vocab, char_vocab, max_word_length, eos='+', see
     print('READING... ', shard_file)
     with codecs.open(shard_file, 'r', 'utf-8') as f:
         lines = [line.strip() for line in f]
-        if seed==0:
-            random.shuffle(lines)
-        elif 0<seed<1:
-            random.shuffle(lines, lambda: seed)
+        if seed==None or seed<=0:
+            seed = get_seed()
+        rng = np.random.RandomState(seed)  
+        rng.shuffle(lines)
+
         for line in lines:
             for word in line.split():
                 word = Vocab.clean(word, max_word_length, eos)
@@ -323,7 +335,11 @@ class Dataset(object):
         self._batch_size = batch_size
         self._num_unroll_steps = num_unroll_steps
         self._max_word_length = max_word_length
-        self._seed = seed
+        if seed==None or seed<=0:
+            self._seed = get_seed()
+        else:
+            self._seed = seed
+        self._rng = np.random.RandomState(self._seed)
         self.num_shards = None
         self.bps = None
         self.wpb = None
@@ -342,12 +358,9 @@ class Dataset(object):
     def file_stream(self):
         file_names = glob.glob(self._file_pattern)
         file_names.sort()
+        self._rng.shuffle(file_names)
         if self.num_shards is None:
             self.num_shards = len(file_names)
-        if self._seed==0:
-            random.shuffle(file_names)
-        elif 0<self._seed<1:
-            random.shuffle(file_names, lambda: self._seed)
         for file_name in file_names:
             yield file_name
             
@@ -355,9 +368,14 @@ class Dataset(object):
         while True:
             for file in self.file_stream():
                 self.cur_file = file
-                word_tensors, char_tensors = load_shard(file, self._word_vocab, self._char_vocab, 
-                                                        self._max_word_length, seed=self._seed)
+                word_tensors, char_tensors = load_shard(shard_file=file, 
+                                                        word_vocab=self._word_vocab, 
+                                                        char_vocab=self._char_vocab, 
+                                                        max_word_length=self._max_word_length, 
+                                                        seed=self._rng.randint(np.iinfo(np.int32).max))
+                
                 shard_reader = DataReader(word_tensors, char_tensors, self._batch_size, self._num_unroll_steps)
+                
                 if self.bps is None:
                     self.bps = shard_reader.length
                 if self.wpb is None:
