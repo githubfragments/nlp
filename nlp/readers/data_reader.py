@@ -11,41 +11,11 @@ import glob
 import pickle
 import time
 
+from nlp.util.utils import get_seed
+
 ALL_CHARS = True
 
-def get_seed(verbose=True):
-    t = int( time.time() * 1000.0 )
-    seed = ((t & 0xff000000) >> 24) + ((t & 0x00ff0000) >>  8) + ((t & 0x0000ff00) <<  8) + ((t & 0x000000ff) << 24)
-    if verbose:
-        print('RANDOM SEED == ', seed)
-    return seed
-    
-def seed_random(seed=None):
-    if seed==None or seed<=0:
-        seed = get_seed()
-    random.seed(seed)
-    np.random.seed(seed=seed)
-    return seed
-    
-def get_hostname():
-    import socket
-    return socket.gethostname()
-
-def get_loc(check='home', default='work'):
-    if check in get_hostname():
-        return check
-    return default
-
-def mkdirs(s):
-    import errno
-    try:
-        os.makedirs(s)
-    except OSError as exc: 
-        if exc.errno == errno.EEXIST and os.path.isdir(s):
-            pass
-
 class Vocab:
-
     def __init__(self, token2index=None, index2token=None):
         self._token2index = token2index or {}
         self._index2token = index2token or []
@@ -108,72 +78,6 @@ def get_char_aray(word, char_vocab, word_vocab, all_chars=True):
     else:
         char_array = char_vocab.get_tok_array(word_vocab.token(word_vocab.get(word)))
     return char_array
-
-def load_data(data_dir, max_word_length, eos='+'):
-
-    char_vocab = Vocab()
-    char_vocab.feed(' ')  # blank is at index 0 in char vocab
-    char_vocab.feed('{')  # start is at index 1 in char vocab
-    char_vocab.feed('}')  # end   is at index 2 in char vocab
-
-    word_vocab = Vocab()
-    word_vocab.feed('|')  # <unk> is at index 0 in word vocab
-
-    actual_max_word_length = 0
-
-    word_tokens = collections.defaultdict(list)
-    char_tokens = collections.defaultdict(list)
-
-    for fname in ('train', 'valid', 'test'):
-        print('READING... ', fname)
-        with codecs.open(os.path.join(data_dir, fname + '.txt'), 'r', 'utf-8') as f:
-            for line in f:
-                line = line.strip()
-                line = line.replace('}', '').replace('{', '').replace('|', '')
-                line = line.replace('<unk>', ' | ')
-                if eos:
-                    line = line.replace(eos, '')
-
-                for word in line.split():
-                    if len(word) > max_word_length - 2:  # space for 'start' and 'end' chars
-                        word = word[:max_word_length-2]
-
-                    word_tokens[fname].append(word_vocab.feed(word))
-
-                    char_array = [char_vocab.feed(c) for c in '{' + word + '}']
-                    char_tokens[fname].append(char_array)
-
-                    actual_max_word_length = max(actual_max_word_length, len(char_array))
-
-                if eos:
-                    word_tokens[fname].append(word_vocab.feed(eos))
-
-                    char_array = [char_vocab.feed(c) for c in '{' + eos + '}']
-                    char_tokens[fname].append(char_array)
-
-    assert actual_max_word_length <= max_word_length
-
-    print()
-    print('actual longest token length is:', actual_max_word_length)
-    print('size of word vocabulary:', word_vocab.size)
-    print('size of char vocabulary:', char_vocab.size)
-    print('number of tokens in train:', len(word_tokens['train']))
-    print('number of tokens in valid:', len(word_tokens['valid']))
-    print('number of tokens in test:', len(word_tokens['test']))
-
-    # now we know the sizes, create tensors
-    word_tensors = {}
-    char_tensors = {}
-    for fname in ('train', 'valid', 'test'):
-        assert len(char_tokens[fname]) == len(word_tokens[fname])
-
-        word_tensors[fname] = np.array(word_tokens[fname], dtype=np.int32)
-        char_tensors[fname] = np.zeros([len(char_tokens[fname]), actual_max_word_length], dtype=np.int32)
-
-        for i, char_array in enumerate(char_tokens[fname]):
-            char_tensors[fname] [i,:len(char_array)] = char_array
-
-    return word_vocab, char_vocab, word_tensors, char_tensors, actual_max_word_length
 
 def load_vocab(vocab_file, max_word_length=60, eos='+'):
     char_vocab = Vocab()
@@ -386,7 +290,8 @@ class Dataset(object):
 def load_test():
     data_dir = '/home/david/data/ets1b/2016'
     vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
-    shard_file = os.path.join(data_dir, 'train', 'ets.2016-00001-of-00100')
+    #shard_file = os.path.join(data_dir, 'train', 'ets.2016-00001-of-00100')
+    shard_file = os.path.join(data_dir, 'holdout', 'ets.2016.heldout-00000-of-00050')
     
     word_vocab, char_vocab, max_word_length = load_vocab(vocab_file, 65)
     print('Done loading vocab.')
@@ -440,16 +345,7 @@ def load_mode_data_test():
     
           
 if __name__ == '__main__':
-#     load_test()
-    load_mode_data_test()
+    load_test()
+#     load_mode_data_test()
     print('done')
     
-#     _, _, wt, ct, _ = load_data('data', 65)
-#     print(wt.keys())
-# 
-#     count = 0
-#     for x, y in DataReader(wt['valid'], ct['valid'], 20, 35).iter():
-#         count += 1
-#         print(x, y)
-#         if count > 0:
-#             break

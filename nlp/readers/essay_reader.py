@@ -6,7 +6,7 @@ import pandas as pd
 import random
 import glob
 import re
-from nlp.util.data_reader import *
+from nlp.readers.data_reader import *
 
 REGEX_NUM = r'^[0-9]*\t[0-9]\t[0-9]\t[0-9]\t(?!\s*$).+'
 REGEX_MODE = r'^[0-9]*\tm\tm\tm\t(?!\s*$).+'
@@ -90,6 +90,7 @@ class EssayReader(object):
             
         return id, label, word_tokens, char_tokens
     
+    # returns list of lists: inner list= [id, label, text string]
     def parse_chunk(self, chunk):
         data = []
         for line in chunk:
@@ -102,16 +103,16 @@ class EssayReader(object):
     
     def chunk_stream(self, stop=True):
         for chunk in self.chunk_reader.chunk_stream(stop=stop):
-            yield self.parse_chunk(chunk)
+            yield self.parse_chunk(chunk) # returns list of lists: inner list= [id, label, text string]
         
     def record_stream(self, stop=True):
         for table in self.chunk_stream(stop=stop):
             for record in table:
-                yield record
+                yield record # [id, label, text string]
                 
     def data_stream(self, stop=True):
         for record in self.record_stream(stop=stop):
-            yield self.parse_record(record)
+            yield self.parse_record(record) # id, label, [word_tokens...], [char_tokens...]
 
 
 class EssaySetReader(object):
