@@ -22,6 +22,20 @@ class adict(dict):
         dict.__init__(self, *av, **kav)
         self.__dict__ = self
 
+def interleave(a,b):
+    return list(itertools.chain.from_iterable(zip(a,b)))
+
+def arrayfun(f,A):
+    return list(map(f,A))
+
+def isnum(a):
+    try:
+        float(repr(a))
+        ans = True
+    except:
+        ans = False
+    return ans
+
 def get_seed(verbose=True):
     t = int( time.time() * 1000.0 )
     seed = ((t & 0xff000000) >> 24) + ((t & 0x00ff0000) >>  8) + ((t & 0x0000ff00) <<  8) + ((t & 0x000000ff) << 24)

@@ -14,7 +14,7 @@ import pickle
 import time
 
 from vocab import Vocab
-from nlp.util.utils import adict
+from nlp.util.utils import adict, get_seed, arrayfun
 
 REGEX_NUM = r'^[0-9]*\t[0-9]\t[0-9]\t[0-9]\t(?!\s*$).+'
 REGEX_MODE = r'^[0-9]*\tm\tm\tm\t(?!\s*$).+'
@@ -54,6 +54,7 @@ class ChunkReader(object):
     def chunk_stream(self, stop=True):
         while True:
             self.eof = False
+            print('READING... ', self.file_name)
             with codecs.open(self.file_name, "r", "utf-8") as f:
                 while not self.eof:
                     yield self.next_chunk(f)
@@ -72,6 +73,45 @@ class ChunkReader(object):
             if i % 100 == 0:
                 print('{} | {}'.format(i,line))
 
+class GlobReader(object):
+    def __init__(self, file_pattern, chunk_size=1000, shuf=True, regex=None, seed=None):
+        self.file_pattern = file_pattern
+        self.file_names = glob.glob(self.file_pattern)
+        self.file_names.sort()
+        self.chunk_size = chunk_size
+        self.shuf = shuf
+        self.regex = regex
+        if seed==None or seed<=0:
+            self.seed = get_seed()
+        else:
+            self.seed = seed
+        self.rng = np.random.RandomState(self.seed)
+        self.num_files = None
+        self.bpf = None
+        self.prev_file = ''
+        
+    def new_file(self):
+        new = (self.cur_file != self.prev_file) and (len(self.prev_file)>0)
+        self.prev_file = self.cur_file
+        return new
+        
+    def file_stream(self):
+        self.rng.shuffle(self.file_names)
+        if self.num_files is None:
+            self.num_files = len(self.file_names)
+        for file_name in self.file_names:
+            yield file_name
+    
+    ''' reads files in sequence (NOT parallel) '''
+    def line_stream(self, stop=True):
+        while True:
+            for file in self.file_stream():
+                self.cur_file = file
+                chunk_reader =  ChunkReader(file, chunk_size=self.chunk_size, shuf=self.shuf, regex=self.regex)
+                for line in chunk_reader.line_stream(stop=True):
+                    yield line
+            if stop:
+                break
 '''
 returns dictionary: words->[word indices]
                     chars->[char indices]
@@ -125,7 +165,14 @@ class TextParser(object):
         if reader!=None:
             for line in reader.line_stream(stop=stop):
                 yield self.parse_line(line)
-                
+    
+    def new_file(self):
+        return self.reader.new_file()
+    
+    @property
+    def num_files(self):
+        return self.reader.num_files
+             
     def sample(self, sample_every=100, reader=None, stop=True):
         i=0
         for d in self.line_stream(reader=reader, stop=stop):
@@ -181,6 +228,27 @@ class TextBatcher(object):
         self.M = self.batch_size * self.num_unroll_steps
         #self.word_toks, self.char_toks, self.N = [], [], 0
     
+    @property
+    def bpf(self):
+        return 3057
+    @property
+    def bps(self):
+        return self.bpf
+    
+    def new_file(self):
+        return self.reader.new_file()
+    def new_shard(self):
+        return self.new_file()
+    
+    @property
+    def num_files(self):
+        return self.reader.num_files
+    
+    def length(self):
+        if not self.num_files is None and not self.bpf is None:
+            return self.num_files*self.bpf
+        return None
+    
     def fill_toks(self, tok_stream):
         self.word_toks, self.char_toks, self.N = [], [], 0
         for d in tok_stream:
@@ -191,13 +259,18 @@ class TextBatcher(object):
                 return True
         return False
     
-    def batch_stream(self, stop=True):
+    def batch_stream(self, stop=False):
         tok_stream = self.reader.line_stream(stop=stop)
         while True:
             if self.fill_toks(tok_stream):
                 assert len(self.word_toks) == self.N
+                
                 word_tensor = np.array(self.word_toks[0:self.M], dtype=np.int32)
-                char_tensor = np.zeros([self.M, self.max_word_length], dtype=np.int32)
+                
+                max_word_length = self.max_word_length
+                max_word_length = max(arrayfun(len, self.char_toks))
+                
+                char_tensor = np.zeros([self.M, max_word_length], dtype=np.int32)
                 for i, char_array in enumerate(self.char_toks):
                     if i==self.M:
                         break
@@ -207,7 +280,7 @@ class TextBatcher(object):
                 ydata[:-1] = word_tensor[1:].copy()
                 ydata[-1] = word_tensor[0].copy()
                 
-                x_batches = char_tensor.reshape([self.batch_size, -1, self.num_unroll_steps, self.max_word_length])
+                x_batches = char_tensor.reshape([self.batch_size, -1, self.num_unroll_steps, max_word_length])
                 y_batches = ydata.reshape([self.batch_size, -1, self.num_unroll_steps])
                 
                 x_batches = np.transpose(x_batches, axes=(1, 0, 2, 3))
@@ -227,8 +300,11 @@ class EssayBatcher(object):
             print('max essay length: {}'.format(self.max_len))
         else:
             self.max_len = max_len
-    
-    def batch_stream(self, stop=True):
+    '''
+    use batch padding instead!
+    https://r2rt.com/recurrent-neural-networks-in-tensorflow-iii-variable-length-sequences.html
+    '''
+    def batch_stream(self, stop=False):
         from keras.preprocessing import sequence
         i, labels, words, chars = 0,[],[],[]
         for d in self.reader.line_stream(stop=stop):
@@ -246,12 +322,12 @@ class EssayBatcher(object):
 def test_text_batcher():
     data_dir = '/home/david/data/ets1b/2016'
     vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
-    #shard_file = os.path.join(data_dir, 'train', 'ets.2016-00001-of-00100')
-    shard_file = os.path.join(data_dir, 'holdout', 'ets.2016.heldout-00001-of-00050')
+    shard_file = os.path.join(data_dir, 'holdout', 'ets.2016.heldout-00000-of-00050')
+    shard_patt = os.path.join(data_dir, 'holdout', 'ets.2016.heldout-0000*-of-00050')
     
-    chunk_reader =  ChunkReader(shard_file, chunk_size=1000, shuf=False)
-    text_parser = TextParser(vocab_file, reader=chunk_reader)
-    
+    #reader =  ChunkReader(shard_file, chunk_size=1000, shuf=False)
+    reader =  GlobReader(shard_patt, chunk_size=1000, shuf=False)
+    text_parser = TextParser(vocab_file, reader=reader)
     batcher = TextBatcher(reader=text_parser, batch_size=256, num_unroll_steps=20)
     for x,y in batcher.batch_stream(stop=True):
         print('{}\t{}'.format(x.shape, y.shape))
@@ -291,6 +367,6 @@ def test():
             
 if __name__ == '__main__':
 #     test()
-#     test_text_batcher()
-    test_essay_batcher()
+    test_text_batcher()
+#     test_essay_batcher()
     print('done')

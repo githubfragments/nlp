@@ -1,0 +1,7 @@
+https://r2rt.com/recurrent-neural-networks-in-tensorflow-iii-variable-length-sequences.html
+
+https://danijar.com/variable-sequence-lengths-in-tensorflow/
+
+https://github.com/yvesx/tf-rnn-pub
+
+https://stackoverflow.com/questions/46032403/lstm-followed-by-mean-pooling-tensorflow
