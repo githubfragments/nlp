@@ -268,7 +268,7 @@ class TextBatcher(object):
                 word_tensor = np.array(self.word_toks[0:self.M], dtype=np.int32)
                 
                 max_word_length = self.max_word_length
-                max_word_length = max(arrayfun(len, self.char_toks))
+                #max_word_length = max(arrayfun(len, self.char_toks))
                 
                 char_tensor = np.zeros([self.M, max_word_length], dtype=np.int32)
                 for i, char_array in enumerate(self.char_toks):
