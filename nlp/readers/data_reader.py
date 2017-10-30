@@ -114,17 +114,18 @@ def load_vocab(vocab_file, max_word_length=60, eos='+'):
     print('size of char vocabulary:', char_vocab.size)
     return word_vocab, char_vocab, actual_max_word_length
 
-def load_shard(shard_file, word_vocab, char_vocab, max_word_length, eos='+', seed=0):
+def load_shard(shard_file, word_vocab, char_vocab, max_word_length, eos='+', seed=0, shuf=True):
     word_tokens = []
     char_tokens = []
 
     print('READING... ', shard_file)
     with codecs.open(shard_file, 'r', 'utf-8') as f:
         lines = [line.strip() for line in f]
-        if seed==None or seed<=0:
-            seed = get_seed()
-        rng = np.random.RandomState(seed)  
-        rng.shuffle(lines)
+        if shuf:
+            if seed==None or seed<=0:
+                seed = get_seed()
+            rng = np.random.RandomState(seed)
+            rng.shuffle(lines)
 
         for line in lines:
             for word in line.split():
@@ -231,8 +232,9 @@ class DataReader:
             yield x, y
 
 class Dataset(object):
-    def __init__(self, word_vocab, char_vocab, file_pattern, batch_size, 
-                 num_unroll_steps, max_word_length, seed=0):
+    def __init__(self, word_vocab, char_vocab, file_pattern, 
+                 batch_size, num_unroll_steps, max_word_length, 
+                 seed=0, shuf=True):
         self._word_vocab = word_vocab
         self._char_vocab = char_vocab
         self._file_pattern = file_pattern
@@ -244,6 +246,7 @@ class Dataset(object):
         else:
             self._seed = seed
         self._rng = np.random.RandomState(self._seed)
+        self._shuf = shuf
         self.num_shards = None
         self.bps = None
         self.wpb = None
@@ -262,7 +265,8 @@ class Dataset(object):
     def file_stream(self):
         file_names = glob.glob(self._file_pattern)
         file_names.sort()
-        self._rng.shuffle(file_names)
+        if self._shuf:
+            self._rng.shuffle(file_names)
         if self.num_shards is None:
             self.num_shards = len(file_names)
         for file_name in file_names:
@@ -276,7 +280,8 @@ class Dataset(object):
                                                         word_vocab=self._word_vocab, 
                                                         char_vocab=self._char_vocab, 
                                                         max_word_length=self._max_word_length, 
-                                                        seed=self._rng.randint(np.iinfo(np.int32).max))
+                                                        seed=self._rng.randint(np.iinfo(np.int32).max),
+                                                        shuf=self._shuf)
                 
                 shard_reader = DataReader(word_tensors, char_tensors, self._batch_size, self._num_unroll_steps)
                 
@@ -286,7 +291,10 @@ class Dataset(object):
                     self.wpb = shard_reader.wpb
                 for x, y in shard_reader.iter():
                     yield x, y
-
+    
+    def batch_stream(self):
+        return self.iter()
+    
 def load_test():
     data_dir = '/home/david/data/ets1b/2016'
     vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
@@ -341,11 +349,22 @@ def load_mode_data_test():
     for k,v in idx_dict.iteritems():
         dd[k] = ([words[i] for i in v], [chars[i] for i in v])
 
+def test_data_reader():
+    data_dir = '/home/david/data/ets1b/2016'
+    vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
+    word_vocab, char_vocab, max_word_length = load_vocab(vocab_file)
+    valid_pat = os.path.join(data_dir, 'holdout', 'ets.2016.heldout-00001-of-00050')
+    valid_reader = Dataset(word_vocab, char_vocab, valid_pat, 128, 20, max_word_length, shuf=False)
     
-    
-          
+    for x, y in valid_reader.batch_stream():
+        print(x)
+        print(y)
+        print('{}\t{}'.format(x.shape, y.shape))
+        break
+     
 if __name__ == '__main__':
-    load_test()
+#     load_test()
 #     load_mode_data_test()
+    test_data_reader()
     print('done')
     

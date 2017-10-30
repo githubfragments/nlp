@@ -96,7 +96,8 @@ class GlobReader(object):
         return new
         
     def file_stream(self):
-        self.rng.shuffle(self.file_names)
+        if self.shuf:
+            self.rng.shuffle(self.file_names)
         if self.num_files is None:
             self.num_files = len(self.file_names)
         for file_name in self.file_names:
@@ -220,13 +221,14 @@ class FieldParser(object):
                 
 ## reader=TextParser
 class TextBatcher(object):
-    def __init__(self, reader, batch_size, num_unroll_steps):
+    def __init__(self, reader, batch_size, num_unroll_steps, batch_chunk = 100, trim_chars=False):
         self.reader = reader
         self.batch_size = batch_size
         self.num_unroll_steps = num_unroll_steps
         self.max_word_length = reader.max_word_length# reader=TextParser
-        self.M = self.batch_size * self.num_unroll_steps
-        #self.word_toks, self.char_toks, self.N = [], [], 0
+        self.batch_chunk = batch_chunk
+        self.trim_chars = trim_chars
+        self.wpb = self.batch_size * self.num_unroll_steps
     
     @property
     def bpf(self):
@@ -249,46 +251,59 @@ class TextBatcher(object):
             return self.num_files*self.bpf
         return None
     
-    def fill_toks(self, tok_stream):
-        self.word_toks, self.char_toks, self.N = [], [], 0
+    def make_batches(self, tok_stream):
+        word_toks, char_toks, N = [], [], 0
         for d in tok_stream:
-            self.word_toks.extend(d.words)
-            self.char_toks.extend(d.chars)
-            self.N = self.N + len(d.words)
-            if self.N >= self.M:
-                return True
-        return False
+            word_toks.extend(d.words)
+            char_toks.extend(d.chars)
+            N = N + len(d.words)
+            if N > self.batch_chunk * self.wpb:
+                break
+        
+        word_tensor = np.array(word_toks, dtype=np.int32)
+        char_tensor = np.zeros([len(char_toks), self.max_word_length], dtype=np.int32)
+        for i, char_array in enumerate(char_toks):
+            char_tensor [i,:len(char_array)] = char_array
+        
+        length = word_tensor.shape[0]
+        assert char_tensor.shape[0] == length
+        
+        # round down length to whole number of slices
+        reduced_length = (length // (self.batch_size * self.num_unroll_steps)) * self.batch_size * self.num_unroll_steps
+        if reduced_length==0:
+            return None
+        
+        word_tensor = word_tensor[:reduced_length]
+        char_tensor = char_tensor[:reduced_length, :]
+        
+        ydata = np.zeros_like(word_tensor)
+        ydata[:-1] = word_tensor[1:].copy()
+        ydata[-1] = word_tensor[0].copy()
+
+        x_batches = char_tensor.reshape([self.batch_size, -1, self.num_unroll_steps, self.max_word_length])
+        y_batches = ydata.reshape([self.batch_size, -1, self.num_unroll_steps])
+
+        x_batches = np.transpose(x_batches, axes=(1, 0, 2, 3))
+        y_batches = np.transpose(y_batches, axes=(1, 0, 2))
+        
+        return list(x_batches), list(y_batches)
     
+    def trim_batch(self, x):
+        s = np.sum(np.sum(x,axis=1), axis=0)
+        i = np.nonzero(s)[0][-1]+1
+        return x[:,:,:i]
+        
     def batch_stream(self, stop=False):
         tok_stream = self.reader.line_stream(stop=stop)
         while True:
-            if self.fill_toks(tok_stream):
-                assert len(self.word_toks) == self.N
-                
-                word_tensor = np.array(self.word_toks[0:self.M], dtype=np.int32)
-                
-                max_word_length = self.max_word_length
-                #max_word_length = max(arrayfun(len, self.char_toks))
-                
-                char_tensor = np.zeros([self.M, max_word_length], dtype=np.int32)
-                for i, char_array in enumerate(self.char_toks):
-                    if i==self.M:
-                        break
-                    char_tensor [i,:len(char_array)] = char_array
-                
-                ydata = np.zeros_like(word_tensor)
-                ydata[:-1] = word_tensor[1:].copy()
-                ydata[-1] = word_tensor[0].copy()
-                
-                x_batches = char_tensor.reshape([self.batch_size, -1, self.num_unroll_steps, max_word_length])
-                y_batches = ydata.reshape([self.batch_size, -1, self.num_unroll_steps])
-                
-                x_batches = np.transpose(x_batches, axes=(1, 0, 2, 3))
-                y_batches = np.transpose(y_batches, axes=(1, 0, 2))
-                yield x_batches[0], y_batches[0]
-                
-            else:
+            batches = self.make_batches(tok_stream)
+            if batches is None:
                 break
+            for x, y in zip(batches[0], batches[1]):
+                if self.trim_chars:
+                    x = self.trim_batch(x)
+                yield x, y
+        
             
 ## reader=FieldParser
 class EssayBatcher(object):
@@ -318,19 +333,7 @@ class EssayBatcher(object):
                 y_tensor = np.array(labels, dtype=np.float32)
                 yield word_tensor, y_tensor
                 i, labels, words, chars = 0,[],[],[]
-
-def test_text_batcher():
-    data_dir = '/home/david/data/ets1b/2016'
-    vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
-    shard_file = os.path.join(data_dir, 'holdout', 'ets.2016.heldout-00000-of-00050')
-    shard_patt = os.path.join(data_dir, 'holdout', 'ets.2016.heldout-0000*-of-00050')
-    
-    #reader =  ChunkReader(shard_file, chunk_size=1000, shuf=False)
-    reader =  GlobReader(shard_patt, chunk_size=1000, shuf=False)
-    text_parser = TextParser(vocab_file, reader=reader)
-    batcher = TextBatcher(reader=text_parser, batch_size=256, num_unroll_steps=20)
-    for x,y in batcher.batch_stream(stop=True):
-        print('{}\t{}'.format(x.shape, y.shape))
+                
         
 def test_essay_batcher():
     data_dir = '/home/david/data/ets1b/2016'
@@ -363,7 +366,21 @@ def test():
     field_parser = FieldParser(fields, reader=chunk_reader)
     field_parser.sample(100, stop=True)
     
+def test_text_batcher():
+    data_dir = '/home/david/data/ets1b/2016'
+    vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
+    #shard_file = os.path.join(data_dir, 'holdout', 'ets.2016.heldout-00000-of-00050')
+    shard_patt = os.path.join(data_dir, 'holdout', 'ets.2016.heldout-00001-of-00050')
     
+    #reader =  ChunkReader(shard_file, chunk_size=1000, shuf=False)
+    reader =  GlobReader(shard_patt, chunk_size=1000, shuf=False)
+    text_parser = TextParser(vocab_file, reader=reader)
+    batcher = TextBatcher(reader=text_parser, batch_size=128, num_unroll_steps=20, batch_chunk = 10)
+    
+    for x, y in batcher.batch_stream(stop=True):
+        #print(x)
+        #print(y)
+        print('{}\t{}'.format(x.shape, y.shape))
             
 if __name__ == '__main__':
 #     test()
