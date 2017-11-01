@@ -291,6 +291,8 @@ class Dataset(object):
                     self.wpb = shard_reader.wpb
                 for x, y in shard_reader.iter():
                     yield x, y
+                    
+            #break
     
     def batch_stream(self):
         return self.iter()
@@ -353,14 +355,18 @@ def test_data_reader():
     data_dir = '/home/david/data/ets1b/2016'
     vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
     word_vocab, char_vocab, max_word_length = load_vocab(vocab_file)
-    valid_pat = os.path.join(data_dir, 'holdout', 'ets.2016.heldout-00001-of-00050')
-    valid_reader = Dataset(word_vocab, char_vocab, valid_pat, 128, 20, max_word_length, shuf=False)
     
-    for x, y in valid_reader.batch_stream():
-        print(x)
-        print(y)
-        print('{}\t{}'.format(x.shape, y.shape))
-        break
+    #patt = os.path.join(data_dir, 'holdout', 'ets.2016.heldout-00001-of-00050')
+    patt = os.path.join(data_dir, 'train', 'ets.2016-00001-of-00100')
+    
+    reader = Dataset(word_vocab, char_vocab, patt, 128, 20, max_word_length, shuf=True)
+    
+    i=1
+    for x, y in reader.batch_stream():
+        #print(x)
+        #print(y)
+        #print('{}\t{}'.format(x.shape, y.shape))
+        print(i);i=i+1
      
 if __name__ == '__main__':
 #     load_test()

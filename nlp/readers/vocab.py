@@ -79,7 +79,8 @@ class Vocab:
         actual_max_word_length = 0
         with codecs.open(vocab_file, "r", "utf-8") as f:
             for line in f:
-                word, count = line.strip().split()
+                #word, count = line.strip().split()
+                word = line.split(None, 1)[0]
                 word = Vocab.clean(word, max_word_length, eos)
                 word_vocab.feed(word)
                 
@@ -103,3 +104,26 @@ class Vocab:
         else:
             char_array = char_vocab.get_tok_array(word_vocab.token(word_vocab.get(word)))
         return char_array
+    
+
+def test1():
+    data_dir = '/home/david/data/ets1b/2016'
+    vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
+    word_vocab, char_vocab, max_word_length = Vocab.load_vocab(vocab_file)
+    
+def test2():
+    data_dir = '/home/david/data/embed'
+    vocab_file = os.path.join(data_dir, 'glove.6B.50d.txt')
+    word_vocab, char_vocab, max_word_length = Vocab.load_vocab(vocab_file)
+    
+def test3():
+    data_dir = '/home/david/data/ets1b/2016'
+    vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
+    word_vocab, char_vocab, max_word_length = Vocab.load_vocab(vocab_file)
+    
+    
+    
+if __name__ == '__main__':
+    test1()
+    test2()
+    print('done')    
