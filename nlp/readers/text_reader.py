@@ -19,6 +19,12 @@ from nlp.util.utils import adict, get_seed, arrayfun
 REGEX_NUM = r'^[0-9]*\t[0-9]\t[0-9]\t[0-9]\t(?!\s*$).+'
 REGEX_MODE = r'^[0-9]*\tm\tm\tm\t(?!\s*$).+'
 
+## for (possibly) nested lists
+def isListEmpty(inList):
+    if isinstance(inList, list): # Is a list
+        return all( map(isListEmpty, inList) )
+    return False # Not a list
+
 '''
 READ FILE IN CHUNKS
 - reads chunk by chunk
@@ -129,40 +135,47 @@ returns dictionary: words->[word indices]
 set words=None, chars=None if not desired
 '''
 class TextParser(object):
-    def __init__(self, vocab_file, reader=None, words='words', chars='chars', eos='+', sep=' '):
-        self.vocab_file = vocab_file
+    def __init__(self, word_vocab=None, char_vocab=None, max_word_length=None, reader=None, words='w', chars='c', eos='+', sep=' '):
+        self.word_vocab = word_vocab
+        self.char_vocab = char_vocab
+        self.max_word_length = max_word_length
         self.reader = reader
-        self.sep = sep
-        self.eos = eos
         self.words = words
         self.chars = chars
-        self.word_vocab, self.char_vocab, self.max_word_length = Vocab.load_vocab(vocab_file)
+        self.eos = eos
+        self.sep = sep
     
     ''' parses line into word/char tokens, based on vocab(s) '''
-    def parse_line(self, line, word_tokens, char_tokens):
-        toks = line.split()#self.sep)
+    def _parse_line(self, line, word_tokens, char_tokens):
+        toks = line.split()
         
         for word in toks:
             word = Vocab.clean(word, self.max_word_length)
-            word_idx = self.word_vocab.get(word)
-            word_tokens.append(word_idx)
             
-            if self.chars:
+            if self.word_vocab:
+                word_idx = self.word_vocab.get(word)
+                word_tokens.append(word_idx)
+            
+            if self.char_vocab:
                 char_array = Vocab.get_char_aray(word, self.char_vocab, self.word_vocab)
                 char_tokens.append(char_array)
                 
         if self.eos:
-            word_tokens.append(self.word_vocab.get(self.eos))
-            if self.chars: char_tokens.append(self.char_vocab.get_tok_array(self.eos))
+            if self.word_vocab: word_tokens.append(self.word_vocab.get(self.eos))
+            if self.char_vocab: char_tokens.append(self.char_vocab.get_tok_array(self.eos))
             
         return word_tokens, char_tokens
     
+    def parse_line(self, line):
+        return self.package(*self._parse_line(line, word_tokens=[], char_tokens=[]))
+    
     def package(self, word_tokens, char_tokens):
-        d = {}
-        if self.words:
-            d[self.words] = word_tokens
-        if self.chars:
-            d[self.chars] = char_tokens
+#         d = {}
+#         if self.word_vocab:
+#             d[self.words] = word_tokens
+#         if self.char_vocab:
+#             d[self.chars] = char_tokens
+        d = {self.words : word_tokens , self.chars : char_tokens }
         return adict(d)
     
     def chunk_stream(self, reader=None, stop=True):
@@ -172,7 +185,7 @@ class TextParser(object):
             for chunk in reader.chunk_stream(stop=stop):
                 word_tokens, char_tokens = [], []
                 for line in chunk:
-                    self.parse_line(line, word_tokens, char_tokens)
+                    self._parse_line(line, word_tokens, char_tokens)
                 yield self.package(word_tokens, char_tokens)
     
     def line_stream(self, reader=None, stop=True):
@@ -180,7 +193,7 @@ class TextParser(object):
             reader=self.reader
         if reader!=None:
             for line in reader.line_stream(stop=stop):
-                yield self.package(*self.parse_line(line, word_tokens=[], char_tokens=[]))
+                yield self.parse_line(line)
     
     def new_file(self):
         return self.reader.new_file()
@@ -194,11 +207,11 @@ class TextParser(object):
         for d in self.line_stream(reader=reader, stop=stop):
             i=i+1
             if i % 100 == 0:
-                print('{} | {}'.format(i, d.words))
+                print('{} | {}'.format(i, d.w))
 
 
 class FieldParser(object):
-    def __init__(self, fields, reader=None, sep='\t'):#vocab_file, cols=[0,1,4], eos='+'):
+    def __init__(self, fields, reader=None, sep='\t'):
         self.fields = fields
         self.reader = reader
         self.sep = sep
@@ -223,7 +236,7 @@ class FieldParser(object):
     def get_maxlen(self):
         n = 0;
         for d in self.line_stream():
-            n = max(n,len(d.words))
+            n = max(n,len(d.w))
         return n
                        
     def sample(self, sample_every=100, reader=None, stop=True):
@@ -231,8 +244,8 @@ class FieldParser(object):
         for d in self.line_stream(reader=reader, stop=stop):
             i=i+1
             if i % 100 == 0:
-                print('{} | {}\t{}\t{}'.format(i, d.id, d.label, d.words))
-                #print('{} | {}'.format(i, d.words))
+                print('{} | {}\t{}\t{}'.format(i, d.id, d.label, d.w))
+                #print('{} | {}'.format(i, d.w))
                 
 ## reader=TextParser
 class TextBatcher(object):
@@ -271,9 +284,9 @@ class TextBatcher(object):
     def make_batches(self, tok_stream):
         word_toks, char_toks, N = [], [], 0
         for d in tok_stream:
-            word_toks.extend(d.words)
-            char_toks.extend(d.chars)
-            N = N + len(d.words)
+            word_toks.extend(d.w)
+            char_toks.extend(d.c)
+            N = N + len(d.w)
             if N > self.batch_chunk * self.wpb:
                 break
         
@@ -305,13 +318,15 @@ class TextBatcher(object):
         
         return list(x_batches), list(y_batches)
     
+    ## trims zero-padding off 3rd (last) dimension (characters)
     def trim_batch(self, x):
         s = np.sum(np.sum(x,axis=1), axis=0)
         i = np.nonzero(s)[0][-1]+1
         return x[:,:,:i]
-        
+    
+    ## x: char indices
+    ## y: word indices
     def batch_stream(self, stop=False):
-        #tok_stream = self.reader.line_stream(stop=stop)
         tok_stream = self.reader.chunk_stream(stop=stop)
         
         while True:
@@ -322,35 +337,77 @@ class TextBatcher(object):
                 if self.trim_chars:
                     x = self.trim_batch(x)
                 yield x, y
+
+def nest_depth(x):
+    depth = lambda L: isinstance(L, list) and max(map(depth, L))+1
+    return depth(x)
         
+def pad_sequences(sequences, max_text_length=None, max_word_length=None, dtype='int32', value=0.):
+    num_samples = len(sequences)
+    if max_text_length is None:
+        max_text_length = max(map(len, sequences))
+    
+    sample_shape = tuple()
+    d = nest_depth(sequences)
+    if d > 2:# <-- indicates char sequence
+        if max_word_length is None:
+            max_word_length = max(map(lambda x:max(map(len,x)), sequences))
+        sample_shape = (max_word_length,)
+        
+    x = (np.ones((num_samples, max_text_length) + sample_shape) * value).astype(dtype)
+    
+    for i,s in enumerate(sequences):
+        if max_word_length:# <-- indicates char sequence
+            y = (np.ones((max_text_length,) + sample_shape) * value).astype(dtype)
+            for j,t in enumerate(s):
+                y[j,:len(t)] = t
+            x[i,:] = y
+        else:# <-- otherwise word sequence
+            x[i,:len(s)] = s
+        
+    return x
+
             
 ## reader=FieldParser
 class EssayBatcher(object):
-    def __init__(self, reader, batch_size, max_len=None):
+    def __init__(self, reader, batch_size, max_text_length=None, max_word_length=None, trim_words=False, trim_chars=False):
         self.reader = reader
         self.batch_size = batch_size
-        if max_len==None:
-            self.max_len = reader.get_maxlen()# reader=FieldParser
-            print('max essay length: {}'.format(self.max_len))
-        else:
-            self.max_len = max_len
+        self.trim_words = trim_words
+        self.trim_chars = trim_chars
+        self.max_text_length = max_text_length
+        self.max_word_length = max_word_length
+        if trim_words:
+            self.max_text_length = None
+        elif max_text_length==None:
+            self.max_text_length = reader.get_maxlen()# reader=FieldParser
+            print('max essay length: {}'.format(self.max_text_length))
+        if trim_chars:
+            self.max_word_length = None       
     '''
     use batch padding instead!
     https://r2rt.com/recurrent-neural-networks-in-tensorflow-iii-variable-length-sequences.html
     '''
     def batch_stream(self, stop=False):
-        from keras.preprocessing import sequence
         i, labels, words, chars = 0,[],[],[]
         for d in self.reader.line_stream(stop=stop):
             labels.append(d.label)
-            words.append(d.words)
-            chars.append(d.chars)
+            words.append(d.w)
+            chars.append(d.c)
             i=i+1
             if i== self.batch_size:
-                words = sequence.pad_sequences(words, maxlen=self.max_len)
-                word_tensor = np.array(words, dtype=np.int32)
                 y_tensor = np.array(labels, dtype=np.float32)
-                yield word_tensor, y_tensor
+                ans = (y_tensor,)
+                
+                if not isListEmpty(words):
+                    word_tensor = pad_sequences(words, max_text_length=self.max_text_length)
+                    ans = ans + (word_tensor,)
+                
+                if not isListEmpty(chars):
+                    char_tensor = pad_sequences(chars, max_text_length=self.max_text_length, max_word_length=self.max_word_length)
+                    ans = ans + (char_tensor,)
+                    
+                yield ans
                 i, labels, words, chars = 0,[],[],[]
 
          
@@ -371,34 +428,16 @@ def test():
     field_parser = FieldParser(fields, reader=chunk_reader)
     field_parser.sample(100, stop=True)
 
-def test_essay_batcher():
-    data_dir = '/home/david/data/ets1b/2016'
-    vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
-    id = 63986; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
-    
-    chunk_reader =  ChunkReader(essay_file, chunk_size=1000, regex=REGEX_NUM, shuf=False)
-    text_parser = TextParser(vocab_file, words='words', chars='chars')
-    fields = {0:'id', 1:'label', -1:text_parser}
-    field_parser = FieldParser(fields, reader=chunk_reader)
-    
-    batcher = EssayBatcher(reader=field_parser, batch_size=128, max_len=1500)
-    for x, y in batcher.batch_stream(stop=True):
-        print('{}\t{}'.format(x.shape, y.shape))
-
 def test_text_reader():
     data_dir = '/home/david/data/ets1b/2016'
     vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
     shard_patt = os.path.join(data_dir, 'holdout', 'ets.2016.heldout-00001-of-00050')
     
-    #reader =  ChunkReader(shard_file, chunk_size=1000, shuf=False)
     reader =  GlobReader(shard_patt, chunk_size=1000, shuf=False)
     text_parser = TextParser(vocab_file, reader=reader)
-    
-#     for d in text_parser.line_stream(stop=True):
-#         print(len(d.words))
         
     for d in text_parser.chunk_stream(stop=True):
-        print(len(d.words))
+        print(len(d.w))
         
 def test_text_batcher():
     data_dir = '/home/david/data/ets1b/2016'
@@ -407,7 +446,10 @@ def test_text_batcher():
     shard_patt = os.path.join(data_dir, 'holdout', 'ets.2016.heldout-0000*-of-00050')
     
     reader =  GlobReader(shard_patt, chunk_size=1000, shuf=True)
-    text_parser = TextParser(vocab_file, reader=reader)
+    
+    word_vocab, char_vocab, max_word_length = Vocab.load_vocab(vocab_file)
+    text_parser = TextParser(word_vocab=word_vocab, char_vocab=char_vocab, max_word_length=max_word_length, reader=reader)
+    
     batcher = TextBatcher(reader=text_parser, batch_size=128, num_unroll_steps=20, batch_chunk=50, trim_chars=True)
     
     #i=1
@@ -416,10 +458,48 @@ def test_text_batcher():
         #print(y)
         print('{}\t{}'.format(x.shape, y.shape))
         #print(i);i=i+1
+        
+def test_essay_batcher_2():# WORD embeddings
+    emb_dir = '/home/david/data/embed'
+    emb_file = os.path.join(emb_dir, 'glove.6B.100d.txt')
+    
+    data_dir = '/home/david/data/ets1b/2016'
+    id = 63986; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
+    
+    reader =  GlobReader(essay_file, chunk_size=1000, regex=REGEX_NUM, shuf=True)
+    
+    E, word_vocab = Vocab.load_word_embeddings(emb_file, essay_file, min_freq=1)
+    text_parser = TextParser(word_vocab=word_vocab)
+    
+    fields = {0:'id', 1:'label', -1:text_parser}
+    field_parser = FieldParser(fields, reader=reader)
+    
+    batcher = EssayBatcher(reader=field_parser, batch_size=128, trim_words=True)
+    for y, x in batcher.batch_stream(stop=True):
+        print('{}\t{}'.format(x.shape, y.shape))
+
+def test_essay_batcher_1():# CHAR embeddings
+    data_dir = '/home/david/data/ets1b/2016'
+    vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
+    id = 62051 # 63986 62051 70088
+    essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
+    
+    reader =  GlobReader(essay_file, chunk_size=1000, regex=REGEX_NUM, shuf=True)
+    
+    word_vocab, char_vocab, max_word_length = Vocab.load_vocab(vocab_file)
+    text_parser = TextParser(word_vocab=word_vocab, char_vocab=char_vocab, max_word_length=max_word_length)
+    
+    fields = {0:'id', 1:'label', -1:text_parser}
+    field_parser = FieldParser(fields, reader=reader)
+    
+    batcher = EssayBatcher(reader=field_parser, batch_size=128, trim_words=True, trim_chars=True)
+    for y, w, c in batcher.batch_stream(stop=True):
+        print('{}\t{}\t{}'.format(w.shape, c.shape, y.shape))
             
 if __name__ == '__main__':
 #     test()
 #     test_text_reader()
-    test_text_batcher()
-#     test_essay_batcher()
+#     test_text_batcher()
+    test_essay_batcher_1()
+#     test_essay_batcher_2()
     print('done')
