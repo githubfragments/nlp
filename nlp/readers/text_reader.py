@@ -342,10 +342,11 @@ def nest_depth(x):
     depth = lambda L: isinstance(L, list) and max(map(depth, L))+1
     return depth(x)
         
-def pad_sequences(sequences, max_text_length=None, max_word_length=None, dtype='int32', value=0.):
+def pad_sequences(sequences, max_text_length=None, max_word_length=None, dtype='int32', wpad='post', cpad='post', value=0.):
     num_samples = len(sequences)
+    seq_lengths = map(len, sequences)
     if max_text_length is None:
-        max_text_length = max(map(len, sequences))
+        max_text_length = max(seq_lengths)
     
     sample_shape = tuple()
     d = nest_depth(sequences)
@@ -357,15 +358,25 @@ def pad_sequences(sequences, max_text_length=None, max_word_length=None, dtype='
     x = (np.ones((num_samples, max_text_length) + sample_shape) * value).astype(dtype)
     
     for i,s in enumerate(sequences):
-        if max_word_length:# <-- indicates char sequence
+        if d > 2:# <-- indicates char sequence
             y = (np.ones((max_text_length,) + sample_shape) * value).astype(dtype)
             for j,t in enumerate(s):
-                y[j,:len(t)] = t
+                k=0
+                if wpad == 'pre':
+                    k = max_text_length-len(s)
+                if cpad == 'post':
+                    y[j+k,:len(t)] = t
+                else:
+                    y[j+k,-len(t):] = t
             x[i,:] = y
         else:# <-- otherwise word sequence
-            x[i,:len(s)] = s
+            if wpad == 'post':
+                x[i,:len(s)] = s
+            else:
+                x[i,-len(s):] = s
+                
         
-    return x
+    return x, seq_lengths
 
             
 ## reader=FieldParser
@@ -396,17 +407,20 @@ class EssayBatcher(object):
             chars.append(d.c)
             i=i+1
             if i== self.batch_size:
-                y_tensor = np.array(labels, dtype=np.float32)
-                ans = (y_tensor,)
+                y = np.array(labels, dtype=np.float32)
+                #y = np.expand_dims(y, 1)
+                y = y[...,None]
+                ans = (y,)
                 
                 if not isListEmpty(words):
-                    word_tensor = pad_sequences(words, max_text_length=self.max_text_length)
+                    word_tensor, seq_lengths = pad_sequences(words, max_text_length=self.max_text_length)
                     ans = ans + (word_tensor,)
                 
                 if not isListEmpty(chars):
-                    char_tensor = pad_sequences(chars, max_text_length=self.max_text_length, max_word_length=self.max_word_length)
+                    char_tensor, seq_lengths = pad_sequences(chars, max_text_length=self.max_text_length, max_word_length=self.max_word_length)
                     ans = ans + (char_tensor,)
-                    
+                
+                ans = ans + (seq_lengths,)
                 yield ans
                 i, labels, words, chars = 0,[],[],[]
 
@@ -458,8 +472,9 @@ def test_text_batcher():
         #print(y)
         print('{}\t{}'.format(x.shape, y.shape))
         #print(i);i=i+1
-        
-def test_essay_batcher_2():# WORD embeddings
+
+''' GLOVE WORD EMBEDDINGS '''       
+def test_essay_batcher_2():
     emb_dir = '/home/david/data/embed'
     emb_file = os.path.join(emb_dir, 'glove.6B.100d.txt')
     
@@ -475,10 +490,11 @@ def test_essay_batcher_2():# WORD embeddings
     field_parser = FieldParser(fields, reader=reader)
     
     batcher = EssayBatcher(reader=field_parser, batch_size=128, trim_words=True)
-    for y, x in batcher.batch_stream(stop=True):
+    for y, x, seq_lens in batcher.batch_stream(stop=True):
         print('{}\t{}'.format(x.shape, y.shape))
 
-def test_essay_batcher_1():# CHAR embeddings
+''' CHAR EMBEDDINGS '''
+def test_essay_batcher_1():
     data_dir = '/home/david/data/ets1b/2016'
     vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
     id = 62051 # 63986 62051 70088
@@ -493,7 +509,7 @@ def test_essay_batcher_1():# CHAR embeddings
     field_parser = FieldParser(fields, reader=reader)
     
     batcher = EssayBatcher(reader=field_parser, batch_size=128, trim_words=True, trim_chars=True)
-    for y, w, c in batcher.batch_stream(stop=True):
+    for y, w, c, seq_lens in batcher.batch_stream(stop=True):
         print('{}\t{}\t{}'.format(w.shape, c.shape, y.shape))
             
 if __name__ == '__main__':
