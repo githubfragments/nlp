@@ -16,6 +16,7 @@ import time
 from vocab import Vocab
 from nlp.util.utils import adict, get_seed, arrayfun
 
+
 REGEX_NUM = r'^[0-9]*\t[0-9]\t[0-9]\t[0-9]\t(?!\s*$).+'
 REGEX_MODE = r'^[0-9]*\tm\tm\tm\t(?!\s*$).+'
 
@@ -234,10 +235,21 @@ class FieldParser(object):
                 yield self.parse_line(line)
     
     def get_maxlen(self):
-        n = 0;
-        for d in self.line_stream():
+        n = 0
+        for d in self.line_stream(stop=True):
             n = max(n,len(d.w))
         return n
+    
+    def get_all_fields(self, key):
+        x = []
+        for d in self.line_stream(stop=True):
+            x.append(d[key])
+        return x
+    
+    def get_ystats(self, key='label'):
+        x = self.get_all_fields(key)
+        x = np.array(x,dtype=np.float32)
+        return np.mean(x), np.std(x), np.min(x), np.max(x)
                        
     def sample(self, sample_every=100, reader=None, stop=True):
         i=0
@@ -381,7 +393,7 @@ def pad_sequences(sequences, max_text_length=None, max_word_length=None, dtype='
             
 ## reader=FieldParser
 class EssayBatcher(object):
-    def __init__(self, reader, batch_size, max_text_length=None, max_word_length=None, trim_words=False, trim_chars=False):
+    def __init__(self, reader, batch_size, max_text_length=None, max_word_length=None, trim_words=False, trim_chars=False, ystats=None):
         self.reader = reader
         self.batch_size = batch_size
         self.trim_words = trim_words
@@ -394,7 +406,15 @@ class EssayBatcher(object):
             self.max_text_length = reader.get_maxlen()# reader=FieldParser
             print('max essay length: {}'.format(self.max_text_length))
         if trim_chars:
-            self.max_word_length = None       
+            self.max_word_length = None
+        if ystats is None:
+            ystats = reader.get_ystats()
+            print('ystats (mean,std,min,max): {}'.format(ystats))
+        self.ystats = ystats
+        
+    def normalize(self, y):
+        return (y - self.ystats[2]) / (self.ystats[3]-self.ystats[2])
+        #return (y - self.ystats[0]) / (self.ystats[3]-self.ystats[2])
     '''
     use batch padding instead!
     https://r2rt.com/recurrent-neural-networks-in-tensorflow-iii-variable-length-sequences.html
@@ -408,8 +428,8 @@ class EssayBatcher(object):
             i=i+1
             if i== self.batch_size:
                 y = np.array(labels, dtype=np.float32)
-                #y = np.expand_dims(y, 1)
-                y = y[...,None]
+                y = self.normalize(y)
+                y = y[...,None]#y = np.expand_dims(y, 1)
                 ans = (y,)
                 
                 if not isListEmpty(words):
@@ -516,6 +536,6 @@ if __name__ == '__main__':
 #     test()
 #     test_text_reader()
 #     test_text_batcher()
-    test_essay_batcher_1()
-#     test_essay_batcher_2()
+#     test_essay_batcher_1()
+    test_essay_batcher_2()
     print('done')
