@@ -36,16 +36,15 @@ def isnum(a):
         ans = False
     return ans
 
-def get_seed(verbose=True):
+def get_seed():
     t = int( time.time() * 1000.0 )
     seed = ((t & 0xff000000) >> 24) + ((t & 0x00ff0000) >>  8) + ((t & 0x0000ff00) <<  8) + ((t & 0x000000ff) << 24)
-    if verbose:
-        print('rand_seed == ', seed)
     return seed
     
 def seed_random(seed=None):
     if seed==None or seed<=0:
         seed = get_seed()
+    print('RAND_SEED == ', seed)
     random.seed(seed)
     np.random.seed(seed=seed)
     return seed

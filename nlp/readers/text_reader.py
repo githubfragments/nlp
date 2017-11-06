@@ -246,10 +246,10 @@ class FieldParser(object):
             x.append(d[key])
         return x
     
-    def get_ystats(self, key='label'):
-        x = self.get_all_fields(key)
+    def get_ystats(self):
+        x = self.get_all_fields(key='label')
         x = np.array(x,dtype=np.float32)
-        return np.mean(x), np.std(x), np.min(x), np.max(x)
+        return np.mean(x), np.std(x), np.min(x), np.max(x), len(x)
                        
     def sample(self, sample_every=100, reader=None, stop=True):
         i=0
@@ -258,6 +258,7 @@ class FieldParser(object):
             if i % 100 == 0:
                 print('{} | {}\t{}\t{}'.format(i, d.id, d.label, d.w))
                 #print('{} | {}'.format(i, d.w))
+        print('{} LINES'.format(i))
                 
 ## reader=TextParser
 class TextBatcher(object):
@@ -409,58 +410,71 @@ class EssayBatcher(object):
             self.max_word_length = None
         if ystats is None:
             ystats = reader.get_ystats()
-            print('ystats (mean,std,min,max): {}'.format(ystats))
+            print('\nYSTATS (mean,std,min,max,#): {}\n'.format(ystats))
         self.ystats = ystats
         
     def normalize(self, y):
-        return (y - self.ystats[2]) / (self.ystats[3]-self.ystats[2])
+        y = (y - self.ystats[2]) / (self.ystats[3]-self.ystats[2])# to interval [0,1]
+        #y = y - (self.ystats[0]-self.ystats[2])/(self.ystats[3]-self.ystats[2])
+        return y
         #return (y - self.ystats[0]) / (self.ystats[3]-self.ystats[2])
+        
+    @property
+    def ymean(self):
+        return self.normalize(self.ystats[0])
+    
     '''
-    use batch padding instead!
+    use batch padding!
     https://r2rt.com/recurrent-neural-networks-in-tensorflow-iii-variable-length-sequences.html
     '''
-    def batch_stream(self, stop=False):
-        i, labels, words, chars = 0,[],[],[]
+    def batch_stream(self, stop=False, skip_ids=None):
+        i, ids, labels, words, chars = 0,[],[],[],[]
         for d in self.reader.line_stream(stop=stop):
+            if skip_ids:
+                if d.id in skip_ids:
+                    continue
+            ids.append(d.id)
             labels.append(d.label)
             words.append(d.w)
             chars.append(d.c)
             i=i+1
             if i== self.batch_size:
+                b = {'ids':ids}
+                
                 y = np.array(labels, dtype=np.float32)
                 y = self.normalize(y)
                 y = y[...,None]#y = np.expand_dims(y, 1)
-                ans = (y,)
+                b['y'] = y
                 
                 if not isListEmpty(words):
                     word_tensor, seq_lengths = pad_sequences(words, max_text_length=self.max_text_length)
-                    ans = ans + (word_tensor,)
+                    b['w'] = word_tensor
                 
                 if not isListEmpty(chars):
                     char_tensor, seq_lengths = pad_sequences(chars, max_text_length=self.max_text_length, max_word_length=self.max_word_length)
-                    ans = ans + (char_tensor,)
+                    b['c'] = char_tensor
                 
-                ans = ans + (seq_lengths,)
-                yield ans
-                i, labels, words, chars = 0,[],[],[]
+                b['s'] = seq_lengths
+                yield adict(b)
+                i, ids, labels, words, chars = 0,[],[],[],[]
 
          
 def test():
+    emb_dir = '/home/david/data/embed'
+    emb_file = os.path.join(emb_dir, 'glove.6B.100d.txt')
+    
     data_dir = '/home/david/data/ets1b/2016'
-    vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
-    shard_file = os.path.join(data_dir, 'train', 'ets.2016-00001-of-00100')
     id = 63986; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
     
-    ## read sentences only (shard file)
-    chunk_reader =  ChunkReader(shard_file, chunk_size=1000, shuf=False)
-    text_parser = TextParser(vocab_file, words='words', chars='chars')
-    text_parser.sample(100, reader=chunk_reader, stop=True)
+    reader =  GlobReader(essay_file, chunk_size=1000, regex=REGEX_NUM, shuf=True)
     
-    ## read essays with id+label
-    chunk_reader =  ChunkReader(essay_file, chunk_size=1000, regex=REGEX_NUM, shuf=False)
+    E, word_vocab = Vocab.load_word_embeddings(emb_file, essay_file, min_freq=1)
+    text_parser = TextParser(word_vocab=word_vocab)
+    
     fields = {0:'id', 1:'label', -1:text_parser}
-    field_parser = FieldParser(fields, reader=chunk_reader)
-    field_parser.sample(100, stop=True)
+    field_parser = FieldParser(fields, reader=reader)
+    
+    field_parser.sample()
 
 def test_text_reader():
     data_dir = '/home/david/data/ets1b/2016'
@@ -510,7 +524,7 @@ def test_essay_batcher_2():
     field_parser = FieldParser(fields, reader=reader)
     
     batcher = EssayBatcher(reader=field_parser, batch_size=128, trim_words=True)
-    for y, x, seq_lens in batcher.batch_stream(stop=True):
+    for ids, y, x, seq_lens in batcher.batch_stream(stop=True):
         print('{}\t{}'.format(x.shape, y.shape))
 
 ''' CHAR EMBEDDINGS '''
@@ -529,13 +543,13 @@ def test_essay_batcher_1():
     field_parser = FieldParser(fields, reader=reader)
     
     batcher = EssayBatcher(reader=field_parser, batch_size=128, trim_words=True, trim_chars=True)
-    for y, w, c, seq_lens in batcher.batch_stream(stop=True):
+    for ids, y, w, c, seq_lens in batcher.batch_stream(stop=True):
         print('{}\t{}\t{}'.format(w.shape, c.shape, y.shape))
             
 if __name__ == '__main__':
-#     test()
+    test()
 #     test_text_reader()
 #     test_text_batcher()
 #     test_essay_batcher_1()
-    test_essay_batcher_2()
+#     test_essay_batcher_2()
     print('done')
