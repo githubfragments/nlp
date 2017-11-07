@@ -11,6 +11,7 @@ import random
 
 import codecs
 import collections
+import itertools
 import glob
 import pickle
 
