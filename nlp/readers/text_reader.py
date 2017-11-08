@@ -34,7 +34,7 @@ READ FILE IN CHUNKS
 - shuffles each chunk
 '''
 class ChunkReader(object):
-    def __init__(self, file_name, chunk_size=1000, shuf=True, regex=None, seed=None):
+    def __init__(self, file_name, chunk_size=1000, shuf=True, regex=None, seed=None, rng=None):
         self.file_name = file_name
         self.chunk_size = chunk_size
         if chunk_size==None or chunk_size<=0: # read entire file as one chunk
@@ -47,7 +47,12 @@ class ChunkReader(object):
             self.seed = get_seed()
         else:
             self.seed = seed
-        self.rng = np.random.RandomState(self.seed)
+            self.shuf = True
+        if rng==None:
+            self.rng = np.random.RandomState(self.seed)
+        else:
+            self.rng = rng
+            self.shuf = True
     
     def next_chunk(self, file_stream):
         lines = []
@@ -85,7 +90,7 @@ class ChunkReader(object):
                 print('{} | {}'.format(i,line))
 
 class GlobReader(object):
-    def __init__(self, file_pattern, chunk_size=1000, shuf=True, regex=None, seed=None):
+    def __init__(self, file_pattern, chunk_size=1000, shuf=True, regex=None, seed=None, rng=None):
         self.file_pattern = file_pattern
         self.file_names = glob.glob(self.file_pattern)
         self.file_names.sort()
@@ -96,7 +101,12 @@ class GlobReader(object):
             self.seed = get_seed()
         else:
             self.seed = seed
-        self.rng = np.random.RandomState(self.seed)
+            self.shuf = True
+        if rng==None:
+            self.rng = np.random.RandomState(self.seed)
+        else:
+            self.rng = rng
+            self.shuf = True
         self.num_files = None
         self.bpf = None
         self.prev_file = ''
@@ -119,7 +129,12 @@ class GlobReader(object):
         while True:
             for file in self.file_stream():
                 self.cur_file = file
-                chunk_reader =  ChunkReader(file, chunk_size=self.chunk_size, shuf=self.shuf, regex=self.regex, seed=self.seed)
+                chunk_reader =  ChunkReader(file, 
+                                            chunk_size=self.chunk_size, 
+                                            shuf=self.shuf, 
+                                            regex=self.regex, 
+                                            seed=self.seed,
+                                            rng=self.rng)
                 for chunk in chunk_reader.chunk_stream(stop=True):
                     yield chunk
             if stop:
@@ -412,9 +427,10 @@ class EssayBatcher(object):
             ystats = reader.get_ystats()
             print('\nYSTATS (mean,std,min,max,#): {}\n'.format(ystats))
         self.ystats = ystats
-        
+    
+    ## to interval [0,1]
     def normalize(self, y):
-        y = (y - self.ystats[2]) / (self.ystats[3]-self.ystats[2])# to interval [0,1]
+        y = (y - self.ystats[2]) / (self.ystats[3]-self.ystats[2])# --> [0,1]
         #y = y - (self.ystats[0]-self.ystats[2])/(self.ystats[3]-self.ystats[2])
         return y
         #return (y - self.ystats[0]) / (self.ystats[3]-self.ystats[2])
@@ -423,19 +439,26 @@ class EssayBatcher(object):
     def ymean(self):
         return self.normalize(self.ystats[0])
     
+    def word_count(self, reset=True):
+        wc = self._word_count
+        if reset:
+            self._word_count = 0
+        return wc
+    
     '''
     use batch padding!
     https://r2rt.com/recurrent-neural-networks-in-tensorflow-iii-variable-length-sequences.html
     '''
     def batch_stream(self, stop=False, skip_ids=None):
         i, ids, labels, words, chars = 0,[],[],[],[]
+        self._word_count = 0
         for d in self.reader.line_stream(stop=stop):
             if skip_ids:
                 if d.id in skip_ids:
                     continue
             ids.append(d.id)
             labels.append(d.label)
-            words.append(d.w)
+            words.append(d.w); self._word_count+=len(d.w)
             chars.append(d.c)
             i=i+1
             if i== self.batch_size:

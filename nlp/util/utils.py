@@ -41,13 +41,16 @@ def get_seed():
     t = int( time.time() * 1000.0 )
     seed = ((t & 0xff000000) >> 24) + ((t & 0x00ff0000) >>  8) + ((t & 0x0000ff00) <<  8) + ((t & 0x000000ff) << 24)
     return seed
-    
+
+rng = 0
 def seed_random(seed=None):
+    global rng
     if seed==None or seed<=0:
         seed = get_seed()
     print('RAND_SEED == ', seed)
     random.seed(seed)
     np.random.seed(seed=seed)
+    rng = np.random.RandomState(seed)
     return seed
 
 def get_hostname():
