@@ -186,13 +186,7 @@ class TextParser(object):
         return self.package(*self._parse_line(line, word_tokens=[], char_tokens=[]))
     
     def package(self, word_tokens, char_tokens):
-#         d = {}
-#         if self.word_vocab:
-#             d[self.words] = word_tokens
-#         if self.char_vocab:
-#             d[self.chars] = char_tokens
-        d = {self.words : word_tokens , self.chars : char_tokens }
-        return adict(d)
+        return adict( { self.words:word_tokens , self.chars:char_tokens } )
     
     def chunk_stream(self, reader=None, stop=True):
         if reader==None:
@@ -262,7 +256,7 @@ class FieldParser(object):
         return x
     
     def get_ystats(self):
-        x = self.get_all_fields(key='label')
+        x = self.get_all_fields(key='y')
         x = np.array(x,dtype=np.float32)
         return np.mean(x), np.std(x), np.min(x), np.max(x), len(x)
                        
@@ -271,7 +265,7 @@ class FieldParser(object):
         for d in self.line_stream(reader=reader, stop=stop):
             i=i+1
             if i % 100 == 0:
-                print('{} | {}\t{}\t{}'.format(i, d.id, d.label, d.w))
+                print('{} | {}\t{}\t{}'.format(i, d.id, d.y, d.w))
                 #print('{} | {}'.format(i, d.w))
         print('{} LINES'.format(i))
                 
@@ -361,10 +355,10 @@ class TextBatcher(object):
             batches = self.make_batches(tok_stream)
             if batches is None:
                 break
-            for x, y in zip(batches[0], batches[1]):
+            for c, w in zip(batches[0], batches[1]):
                 if self.trim_chars:
-                    x = self.trim_batch(x)
-                yield x, y
+                    c = self.trim_batch(c)
+                yield adict( { 'w':w , 'c':c } )
 
 def nest_depth(x):
     depth = lambda L: isinstance(L, list) and max(map(depth, L))+1
@@ -403,7 +397,6 @@ def pad_sequences(sequences, max_text_length=None, max_word_length=None, dtype='
             else:
                 x[i,-len(s):] = s
                 
-        
     return x, seq_lengths
 
             
@@ -457,17 +450,17 @@ class EssayBatcher(object):
                 if d.id in skip_ids:
                     continue
             ids.append(d.id)
-            labels.append(d.label)
+            labels.append(d.y)
             words.append(d.w); self._word_count+=len(d.w)
             chars.append(d.c)
             i=i+1
             if i== self.batch_size:
-                b = {'ids':ids}
+                b = {'id':ids}                              # <-- THIS key ('id') SHOULD COME FROM FIELD_PARSER.fields
                 
                 y = np.array(labels, dtype=np.float32)
                 y = self.normalize(y)
                 y = y[...,None]#y = np.expand_dims(y, 1)
-                b['y'] = y
+                b['y'] = y                                  # <-- THIS key ('y') SHOULD COME FROM FIELD_PARSER.fields
                 
                 if not isListEmpty(words):
                     word_tensor, seq_lengths = pad_sequences(words, max_text_length=self.max_text_length)
@@ -477,6 +470,8 @@ class EssayBatcher(object):
                     char_tensor, seq_lengths = pad_sequences(chars, max_text_length=self.max_text_length, max_word_length=self.max_word_length)
                     b['c'] = char_tensor
                 
+                # EVEN 'w' & 'c' SHOULD COME FROM FIELD PARSER.TEXT_PARSER.fields
+                 
                 b['s'] = seq_lengths
                 yield adict(b)
                 i, ids, labels, words, chars = 0,[],[],[],[]
@@ -494,7 +489,7 @@ def test():
     E, word_vocab = Vocab.load_word_embeddings(emb_file, essay_file, min_freq=1)
     text_parser = TextParser(word_vocab=word_vocab)
     
-    fields = {0:'id', 1:'label', -1:text_parser}
+    fields = {0:'id', 1:'y', -1:text_parser}
     field_parser = FieldParser(fields, reader=reader)
     
     field_parser.sample()
@@ -524,10 +519,10 @@ def test_text_batcher():
     batcher = TextBatcher(reader=text_parser, batch_size=128, num_unroll_steps=20, batch_chunk=50, trim_chars=True)
     
     #i=1
-    for x, y in batcher.batch_stream(stop=True):
+    for b in batcher.batch_stream(stop=True):
         #print(x)
         #print(y)
-        print('{}\t{}'.format(x.shape, y.shape))
+        print('{}\t{}'.format(b.w.shape, b.c.shape))
         #print(i);i=i+1
 
 ''' GLOVE WORD EMBEDDINGS '''       
@@ -543,13 +538,12 @@ def test_essay_batcher_2():
     E, word_vocab = Vocab.load_word_embeddings(emb_file, essay_file, min_freq=1)
     text_parser = TextParser(word_vocab=word_vocab)
     
-    fields = {0:'id', 1:'label', -1:text_parser}
+    fields = {0:'id', 1:'y', -1:text_parser}
     field_parser = FieldParser(fields, reader=reader)
     
     batcher = EssayBatcher(reader=field_parser, batch_size=128, trim_words=True)
     for b in batcher.batch_stream(stop=True):
-        
-        print('{}\t{}'.format(x.shape, y.shape))
+        print('{}\t{}'.format(b.w.shape, b.y.shape))
 
 ''' CHAR EMBEDDINGS '''
 def test_essay_batcher_1():
@@ -563,7 +557,7 @@ def test_essay_batcher_1():
     word_vocab, char_vocab, max_word_length = Vocab.load_vocab(vocab_file)
     text_parser = TextParser(word_vocab=word_vocab, char_vocab=char_vocab, max_word_length=max_word_length)
     
-    fields = {0:'id', 1:'label', -1:text_parser}
+    fields = {0:'id', 1:'y', -1:text_parser}
     field_parser = FieldParser(fields, reader=reader)
     
     batcher = EssayBatcher(reader=field_parser, batch_size=128, trim_words=True, trim_chars=True)
@@ -573,7 +567,7 @@ def test_essay_batcher_1():
 if __name__ == '__main__':
 #     test()
 #     test_text_reader()
-#     test_text_batcher()
+    test_text_batcher()
 #     test_essay_batcher_1()
-    test_essay_batcher_2()
+#     test_essay_batcher_2()
     print('done')
