@@ -547,7 +547,8 @@ def test_essay_batcher_2():
     field_parser = FieldParser(fields, reader=reader)
     
     batcher = EssayBatcher(reader=field_parser, batch_size=128, trim_words=True)
-    for ids, y, x, seq_lens in batcher.batch_stream(stop=True):
+    for b in batcher.batch_stream(stop=True):
+        
         print('{}\t{}'.format(x.shape, y.shape))
 
 ''' CHAR EMBEDDINGS '''
@@ -570,9 +571,9 @@ def test_essay_batcher_1():
         print('{}\t{}\t{}'.format(w.shape, c.shape, y.shape))
             
 if __name__ == '__main__':
-    test()
+#     test()
 #     test_text_reader()
 #     test_text_batcher()
 #     test_essay_batcher_1()
-#     test_essay_batcher_2()
+    test_essay_batcher_2()
     print('done')
