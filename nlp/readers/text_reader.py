@@ -383,6 +383,8 @@ def pad_sequences(sequences, max_text_length=None, max_word_length=None, dtype='
         if d > 2:# <-- indicates char sequence
             y = (np.ones((max_text_length,) + sample_shape) * value).astype(dtype)
             for j,t in enumerate(s):
+                if j>= max_text_length:
+                    break
                 k=0
                 if wpad == 'pre':
                     k = max_text_length-len(s)
@@ -392,6 +394,7 @@ def pad_sequences(sequences, max_text_length=None, max_word_length=None, dtype='
                     y[j+k,-len(t):] = t
             x[i,:] = y
         else:# <-- otherwise word sequence
+            s = s[:max_text_length]
             if wpad == 'post':
                 x[i,:len(s)] = s
             else:
@@ -442,7 +445,7 @@ class EssayBatcher(object):
     use batch padding!
     https://r2rt.com/recurrent-neural-networks-in-tensorflow-iii-variable-length-sequences.html
     '''
-    def batch_stream(self, stop=False, skip_ids=None):
+    def batch_stream(self, stop=False, skip_ids=None, w=True, c=True):
         i, ids, labels, words, chars = 0,[],[],[],[]
         self._word_count = 0
         for d in self.reader.line_stream(stop=stop):
@@ -462,17 +465,22 @@ class EssayBatcher(object):
                 y = y[...,None]#y = np.expand_dims(y, 1)
                 b['y'] = y                                  # <-- THIS key ('y') SHOULD COME FROM FIELD_PARSER.fields
                 
-                if not isListEmpty(words):
+                if w and not isListEmpty(words):
                     word_tensor, seq_lengths = pad_sequences(words, max_text_length=self.max_text_length)
                     b['w'] = word_tensor
                 
-                if not isListEmpty(chars):
+                if c and not isListEmpty(chars):
                     char_tensor, seq_lengths = pad_sequences(chars, max_text_length=self.max_text_length, max_word_length=self.max_word_length)
                     b['c'] = char_tensor
                 
                 # EVEN 'w' & 'c' SHOULD COME FROM FIELD PARSER.TEXT_PARSER.fields
-                 
+                
+                ## just TESTING!!!!!#dsvtest
+                max_seq_length = max(seq_lengths)
+                seq_lengths = [max_seq_length for x in seq_lengths]
+                
                 b['s'] = seq_lengths
+                
                 yield adict(b)
                 i, ids, labels, words, chars = 0,[],[],[],[]
 
@@ -560,14 +568,14 @@ def test_essay_batcher_1():
     fields = {0:'id', 1:'y', -1:text_parser}
     field_parser = FieldParser(fields, reader=reader)
     
-    batcher = EssayBatcher(reader=field_parser, batch_size=128, trim_words=True, trim_chars=True)
-    for ids, y, w, c, seq_lens in batcher.batch_stream(stop=True):
-        print('{}\t{}\t{}'.format(w.shape, c.shape, y.shape))
+    batcher = EssayBatcher(reader=field_parser, batch_size=128, max_word_length=max_word_length, trim_words=True, trim_chars=False)
+    for b in batcher.batch_stream(stop=True):
+        print('{}\t{}\t{}'.format(b.w.shape, b.c.shape, b.y.shape))
             
 if __name__ == '__main__':
 #     test()
 #     test_text_reader()
-    test_text_batcher()
-#     test_essay_batcher_1()
+#     test_text_batcher()
+    test_essay_batcher_1()
 #     test_essay_batcher_2()
     print('done')

@@ -6,14 +6,15 @@ import os, errno
 import logging
 import numpy as np
 import pandas as pd
-import time
 import random
-
 import codecs
 import collections
 import itertools
 import glob
 import pickle
+import time
+from timeit import default_timer as timer
+import tensorflow as tf
 
 class adict(dict):
     ''' Attribute dictionary - a convenience data structure, similar to SimpleNamespace in python 3.3
@@ -22,6 +23,56 @@ class adict(dict):
     def __init__(self, *av, **kav):
         dict.__init__(self, *av, **kav)
         self.__dict__ = self
+
+def memoize(f):
+    """ Memoization decorator for a function taking one or more arguments. """
+    class memodict(dict):
+        def __getitem__(self, *key):
+            return dict.__getitem__(self, key)
+        def __missing__(self, key):
+            ret = self[key] = f(*key)
+            return ret
+    return memodict().__getitem__
+
+T={}
+def tic(K=0):
+    global T
+    if isinstance(K,list):
+        for k in K:
+            tic(k)
+    else:
+        T[K]=timer()
+def toc(K=0, reset=True):
+    global T
+    t=timer()
+    tt=t-T[K]
+    if reset:
+        T[K]=t
+    return tt
+
+def dot(x,y):
+    x = tf.transpose(x)
+    #y = tf.transpose(y)
+    return tf.matmul(x,y)
+
+def qwk(t,p):
+    mt = tf.reduce_mean(t)
+    mp = tf.reduce_mean(p)
+    N = tf.cast(tf.shape(t)[0], tf.float32)
+    k = 2. * N * mt * mp
+    u = 2. *dot(t,p) - k
+    v = dot(t,t) + dot(p,p) - k
+    return tf.squeeze(u / v)
+
+def qwk_loss(t,p):
+    return 1. - qwk(t,p)
+
+def nkappa(t,x):
+    t=np.array(t,np.float32)
+    x=np.array(x,np.float32)
+    u = 0.5 * np.sum(np.square(x - t))
+    v = np.dot(np.transpose(x), t - np.mean(t))
+    return v / (v + u)
 
 def interleave(a,b):
     return list(itertools.chain.from_iterable(zip(a,b)))
@@ -75,6 +126,9 @@ def try_abs(path, root):
     if os.path.isabs(path):
         return path
     return os.path.join(root,path)
+
+def make_abs(path):
+    return os.path.abspath(path)
 
 # sort 2-D numpy array by col
 def sortrows(x,col=0,asc=True):
