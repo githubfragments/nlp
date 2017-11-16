@@ -468,10 +468,12 @@ class EssayBatcher(object):
                 if w and not isListEmpty(words):
                     word_tensor, seq_lengths = pad_sequences(words, max_text_length=self.max_text_length)
                     b['w'] = word_tensor
+                    b['x'] = b['w']
                 
                 if c and not isListEmpty(chars):
                     char_tensor, seq_lengths = pad_sequences(chars, max_text_length=self.max_text_length, max_word_length=self.max_word_length)
                     b['c'] = char_tensor
+                    b['x'] = b['c']
                 
                 # EVEN 'w' & 'c' SHOULD COME FROM FIELD PARSER.TEXT_PARSER.fields
                 

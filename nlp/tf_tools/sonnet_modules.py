@@ -10,16 +10,21 @@ import numpy as np
 import tensorflow as tf
 import sonnet as snt
 
+from nlp.util import utils as U
+
 from nlp.rwa.RWACell import RWACell
 from nlp.tensorflow_with_latest_papers import rnn_cell_modern
 # from nlp.recurrent_highway_networks.rhn import RHNCell
 
-#import LM_sonnet_modules as lm
-#from nlp.util.utils import interleave
-
 '''
 https://github.com/deepmind/sonnet/blob/master/sonnet/examples/rnn_shakespeare.py
 '''
+def init_dict(initializer, keys):
+    if initializer!=None:
+        if U.isnum(initializer):
+            initializer = tf.constant_initializer(initializer)
+        return {k: initializer for k in keys}
+    return None
 
 class WordEmbed(snt.AbstractModule):
     def __init__(self, vocab_size=None, embed_dim=None, initial_matrix=None, trainable=True, name="word_embed"):
