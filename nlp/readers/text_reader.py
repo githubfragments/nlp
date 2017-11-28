@@ -14,8 +14,8 @@ import pickle
 import time
 
 from vocab import Vocab
-from nlp.util.utils import adict, get_seed, arrayfun
-
+from nlp.util.utils import adict, get_seed, arrayfun, adict
+from nlp.util import utils as U
 
 REGEX_NUM = r'^[0-9]*\t[0-9]\t[0-9]\t[0-9]\t(?!\s*$).+'
 REGEX_MODE = r'^[0-9]*\tm\tm\tm\t(?!\s*$).+'
@@ -34,7 +34,7 @@ READ FILE IN CHUNKS
 - shuffles each chunk
 '''
 class ChunkReader(object):
-    def __init__(self, file_name, chunk_size=1000, shuf=True, regex=None, seed=None, rng=None):
+    def __init__(self, file_name, chunk_size=1000, shuf=True, regex=None, seed=None):
         self.file_name = file_name
         self.chunk_size = chunk_size
         if chunk_size==None or chunk_size<=0: # read entire file as one chunk
@@ -44,15 +44,11 @@ class ChunkReader(object):
         if regex:
             self.regex = re.compile(regex)
         if seed==None or seed<=0:
-            self.seed = get_seed()
+            self.seed = U.get_seed()
         else:
             self.seed = seed
             self.shuf = True
-        if rng==None:
-            self.rng = np.random.RandomState(self.seed)
-        else:
-            self.rng = rng
-            self.shuf = True
+        self.rng = np.random.RandomState(self.seed + U.string2rand('ChunkReader'))
     
     def next_chunk(self, file_stream):
         lines = []
@@ -90,7 +86,7 @@ class ChunkReader(object):
                 print('{} | {}'.format(i,line))
 
 class GlobReader(object):
-    def __init__(self, file_pattern, chunk_size=1000, shuf=True, regex=None, seed=None, rng=None):
+    def __init__(self, file_pattern, chunk_size=1000, shuf=True, regex=None, seed=None):
         self.file_pattern = file_pattern
         self.file_names = glob.glob(self.file_pattern)
         self.file_names.sort()
@@ -102,11 +98,7 @@ class GlobReader(object):
         else:
             self.seed = seed
             self.shuf = True
-        if rng==None:
-            self.rng = np.random.RandomState(self.seed)
-        else:
-            self.rng = rng
-            self.shuf = True
+        self.rng = np.random.RandomState(self.seed + U.string2rand('GlobReader'))
         self.num_files = None
         self.bpf = None
         self.prev_file = ''
@@ -133,8 +125,7 @@ class GlobReader(object):
                                             chunk_size=self.chunk_size, 
                                             shuf=self.shuf, 
                                             regex=self.regex, 
-                                            seed=self.seed,
-                                            rng=self.rng)
+                                            seed=self.seed)
                 for chunk in chunk_reader.chunk_stream(stop=True):
                     yield chunk
             if stop:
@@ -219,14 +210,30 @@ class TextParser(object):
             if i % 100 == 0:
                 print('{} | {}'.format(i, d.w))
 
+def sample_table(c, min_cut=0.5, r=0.95):
+    n = float(c.sum())
+    t = float(c.min())/c
+    while sum(t*c)/n < min_cut:
+        t=1.-r*(1.-t)
+    return t
 
-class FieldParser(object):
-    def __init__(self, fields, reader=None, sep='\t'):
-        self.fields = fields
-        self.reader = reader
-        self.sep = sep
+def sample_dict(v, c, min_cut=0.5, r=0.95):
+    t = sample_table(c, min_cut=min_cut, r=r)
+    return dict(zip(v, t))
     
-    def parse_line(self, line):
+class FieldParser(object):
+    def __init__(self, fields, reader=None, sep='\t', seed=None):
+        self.fields = fields
+        self.reader = reader# GlobReader!!
+        self.sep = sep
+        self.seed = seed
+        if seed==None or seed<=0:
+            self.seed = U.get_seed()
+        else:
+            self.seed = seed
+        self.rng = np.random.RandomState(self.seed + U.string2rand('FieldParser'))
+    
+    def parse_line(self, line, t=None):
         rec = line.strip().split(self.sep)
         d = {}
         for k,v in self.fields.items():
@@ -234,14 +241,23 @@ class FieldParser(object):
                 d[v] = rec[k].strip()
             else:
                 d.update(v.parse_line(rec[k].strip()))
+            if t and v=='y':
+                y = float(d[v])
+                p = t[y]
+                if self.rng.rand()>p:
+                    #print('sample NO\t[{},{}]'.format(y,p))
+                    return None
+                #print('sample YES\t[{},{}]'.format(y,p))
         return adict(d)
     
-    def line_stream(self, reader=None, stop=True):
+    def line_stream(self, reader=None, stop=True, t=None):
         if reader==None:
             reader=self.reader
         if reader!=None:
             for line in self.reader.line_stream(stop=stop):
-                yield self.parse_line(line)
+                d = self.parse_line(line, t=t)
+                if d: 
+                    yield d
     
     def get_maxlen(self):
         n = 0
@@ -256,9 +272,18 @@ class FieldParser(object):
         return x
     
     def get_ystats(self):
-        x = self.get_all_fields(key='y')
-        x = np.array(x,dtype=np.float32)
-        return np.mean(x), np.std(x), np.min(x), np.max(x), len(x)
+        y = self.get_all_fields(key='y')
+        y = np.array(y,dtype=np.float32)
+        v, c = np.unique(y, return_counts=True)
+        d = {}
+        d['mean'] = np.mean(y)
+        d['std'] = np.std(y)
+        d['min'] = np.min(y)
+        d['max'] = np.max(y)
+        d['n'] = len(y)
+        d['v'] = v
+        d['c'] = c
+        return adict(d)#return np.mean(y), np.std(y), np.min(y), np.max(y), len(y)
                        
     def sample(self, sample_every=100, reader=None, stop=True):
         i=0
@@ -420,20 +445,20 @@ class EssayBatcher(object):
         if trim_chars:
             self.max_word_length = None
         if ystats is None:
-            ystats = reader.get_ystats()
+            ystats = reader.get_ystats()# for ATS: reader=field_parser
             print('\nYSTATS (mean,std,min,max,#): {}\n'.format(ystats))
         self.ystats = ystats
     
     ## to interval [0,1]
     def normalize(self, y):
-        y = (y - self.ystats[2]) / (self.ystats[3]-self.ystats[2])# --> [0,1]
-        #y = y - (self.ystats[0]-self.ystats[2])/(self.ystats[3]-self.ystats[2])
+        y = (y - self.ystats.min) / (self.ystats.max-self.ystats.min)# --> [0,1]
+        #y = y - (self.ystats.mean-self.ystats.min)/(self.ystats.max-self.ystats.min)
         return y
-        #return (y - self.ystats[0]) / (self.ystats[3]-self.ystats[2])
+        #return (y - self.ystats.mean) / (self.ystats.max-self.ystats.min)
         
     @property
     def ymean(self):
-        return self.normalize(self.ystats[0])
+        return self.normalize(self.ystats.min)
     
     def word_count(self, reset=True):
         wc = self._word_count
@@ -445,10 +470,14 @@ class EssayBatcher(object):
     use batch padding!
     https://r2rt.com/recurrent-neural-networks-in-tensorflow-iii-variable-length-sequences.html
     '''
-    def batch_stream(self, stop=False, skip_ids=None, w=True, c=True):
+    def batch_stream(self, stop=False, skip_ids=None, w=True, c=True, min_cut=1.0):
+        t=None
+        if min_cut<1.0:
+            t = sample_dict(self.ystats.v, self.ystats.c, min_cut=min_cut)
+            
         i, ids, labels, words, chars = 0,[],[],[],[]
         self._word_count = 0
-        for d in self.reader.line_stream(stop=stop):
+        for d in self.reader.line_stream(stop=stop, t=t):# reader=FieldParser!
             if skip_ids:
                 if d.id in skip_ids:
                     continue
@@ -486,24 +515,6 @@ class EssayBatcher(object):
                 yield adict(b)
                 i, ids, labels, words, chars = 0,[],[],[],[]
 
-         
-def test():
-    emb_dir = '/home/david/data/embed'
-    emb_file = os.path.join(emb_dir, 'glove.6B.100d.txt')
-    
-    data_dir = '/home/david/data/ets1b/2016'
-    id = 63986; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
-    
-    reader =  GlobReader(essay_file, chunk_size=1000, regex=REGEX_NUM, shuf=True)
-    
-    E, word_vocab = Vocab.load_word_embeddings(emb_file, essay_file, min_freq=1)
-    text_parser = TextParser(word_vocab=word_vocab)
-    
-    fields = {0:'id', 1:'y', -1:text_parser}
-    field_parser = FieldParser(fields, reader=reader)
-    
-    field_parser.sample()
-
 def test_text_reader():
     data_dir = '/home/david/data/ets1b/2016'
     vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
@@ -539,20 +550,21 @@ def test_text_batcher():
 def test_essay_batcher_2():
     emb_dir = '/home/david/data/embed'
     emb_file = os.path.join(emb_dir, 'glove.6B.100d.txt')
+    U.seed_random(1234)
     
     data_dir = '/home/david/data/ets1b/2016'
     id = 63986; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
     
     reader =  GlobReader(essay_file, chunk_size=1000, regex=REGEX_NUM, shuf=True)
     
-    E, word_vocab = Vocab.load_word_embeddings(emb_file, essay_file, min_freq=1)
+    E, word_vocab = Vocab.load_word_embeddings(emb_file, essay_file, min_freq=10)
     text_parser = TextParser(word_vocab=word_vocab)
     
     fields = {0:'id', 1:'y', -1:text_parser}
-    field_parser = FieldParser(fields, reader=reader)
+    field_parser = FieldParser(fields, reader=reader, seed=1234)
     
     batcher = EssayBatcher(reader=field_parser, batch_size=128, trim_words=True)
-    for b in batcher.batch_stream(stop=True):
+    for b in batcher.batch_stream(stop=True, min_cut=0.5):
         print('{}\t{}'.format(b.w.shape, b.y.shape))
 
 ''' CHAR EMBEDDINGS '''
@@ -573,11 +585,30 @@ def test_essay_batcher_1():
     batcher = EssayBatcher(reader=field_parser, batch_size=128, max_word_length=max_word_length, trim_words=True, trim_chars=False)
     for b in batcher.batch_stream(stop=True):
         print('{}\t{}\t{}'.format(b.w.shape, b.c.shape, b.y.shape))
-            
+
+def test_ystats():
+    emb_dir = '/home/david/data/embed'
+    emb_file = os.path.join(emb_dir, 'glove.6B.100d.txt')
+    
+    data_dir = '/home/david/data/ets1b/2016'
+    id = 70088; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
+    
+    reader =  GlobReader(essay_file, chunk_size=10000, regex=REGEX_NUM, shuf=True)
+    
+    E, word_vocab = Vocab.load_word_embeddings(emb_file, essay_file, min_freq=1)
+    text_parser = TextParser(word_vocab=word_vocab)
+    
+    fields = {0:'id', 1:'y', -1:text_parser}
+    field_parser = FieldParser(fields, reader=reader)
+    
+    #field_parser.sample()
+    ystats = field_parser.get_ystats()
+    print(ystats)
+               
 if __name__ == '__main__':
-#     test()
+#     test_ystats()
 #     test_text_reader()
 #     test_text_batcher()
-    test_essay_batcher_1()
-#     test_essay_batcher_2()
+#     test_essay_batcher_1()
+    test_essay_batcher_2()
     print('done')

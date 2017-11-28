@@ -104,6 +104,11 @@ def seed_random(seed=None):
     rng = np.random.RandomState(seed)
     return seed
 
+def string2rand(s):
+    return abs(hash(s)) % (10 ** 8)
+
+
+
 def get_hostname():
     import socket
     return socket.gethostname()
