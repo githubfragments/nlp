@@ -12,7 +12,11 @@ import sonnet as snt
 
 from nlp.util import utils as U
 
-from nlp.rwa.RWACell import RWACell
+# from nlp.rwa.RWACell import RWACell         # <-- jostmey
+from nlp.rwa.rwa_cell import RWACell
+
+from nlp.rwa.rda_cell import RDACell
+
 from nlp.tensorflow_with_latest_papers import rnn_cell_modern
 # from nlp.recurrent_highway_networks.rhn import RHNCell
 
@@ -219,31 +223,61 @@ class Dropout(snt.AbstractModule):
         self._ensure_is_connected()
         return self._keep_prob
 
-###############################################################################
+#########################################################################################
 
 def rnn_unit(args):
     kwargs = {}
-    if args.unit=='lstm':
+    if args.unit=='snt.lstm':
+        rnn = snt.LSTM
+        kwargs = { 'forget_bias':args.forget_bias }
+    elif args.unit=='snt.gru':
+        rnn = snt.GRU
+    elif args.unit=='lstm':
         rnn = tf.nn.rnn_cell.LSTMCell
-        kwargs = { 'reuse':False, 'forget_bias':args.forget_bias, 'state_is_tuple':True }
+        kwargs = { 'forget_bias':args.forget_bias, 'reuse':False, 'state_is_tuple':True }
     elif args.unit=='gru':
         rnn = tf.nn.rnn_cell.GRUCell
         kwargs = { 'reuse':False }
     elif args.unit=='rwa':
-        rnn = RWA_Cell
+        rnn = RWACell
+    elif args.unit=='rwa_bn':
+        rnn = RWACell
+        kwargs = { 'normalize':True }
+    elif args.unit=='rda':
+        rnn = RDACell
+    elif args.unit=='rda_bn':
+        rnn = RDACell
+        kwargs = { 'normalize':True }
     elif args.unit=='rhn':
         rnn = RHN_Cell
     return rnn, kwargs
 
+def get_initial_state(cell, args):
+    if args.train_initial_state:
+        if args.unit.startswith('snt'):
+            return cell.initial_state(args.batch_size, tf.float32, trainable=True)
+        print('TRAINABLE INITIAL STATE NOT YET IMPLEMENTED FOR: {} !!!'.format(args.unit))
+#         else:
+#             initializer = r2rt.make_variable_state_initializer()
+#             return r2rt.get_initial_cell_state(cell, initializer, args.batch_size, tf.float32)
+    return cell.zero_state(args.batch_size, tf.float32)
+
 def create_rnn_cell(args):
     rnn, kwargs = rnn_unit(args)
     cell = rnn(args.rnn_size, **kwargs)
+    
+    initial_state = get_initial_state(cell, args)
+    
     #cell = tf.contrib.rnn.ResidualWrapper(cell)
     #cell = tf.contrib.rnn.HighwayWrapper(cell)
     #cell = tf.contrib.rnn.AttentionCellWrapper(cell, attn_length=10, attn_size=100)
+    
     if args.dropout>0:
-        cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=args._keep_prob)#variational_recurrent=True
-    return cell
+        cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=args._keep_prob)
+        #cell = tf.contrib.rnn.DropoutWrapper(cell, input_keep_prob=args._keep_prob)
+        #variational_recurrent=True
+        
+    return cell, initial_state
 
 class DeepRNN(snt.AbstractModule):
     def __init__(self, rnn_size,
@@ -272,14 +306,15 @@ class DeepRNN(snt.AbstractModule):
 
     def _build(self, inputs):
         if self.num_layers > 1:
-            cell = tf.contrib.rnn.MultiRNNCell([create_rnn_cell(self) for _ in range(self.num_layers)], state_is_tuple=True)
+            cells = [create_rnn_cell(self) for _ in range(self.num_layers)]
+            cells, states = zip(*cells)
+            cell = tf.contrib.rnn.MultiRNNCell(cells, state_is_tuple=True)
+            self._initial_rnn_state = tuple(states)
         else:
-            cell = create_rnn_cell(self)
+            cell, self._initial_rnn_state = create_rnn_cell(self)
 
-        if self.train_initial_state:
-            self._initial_rnn_state = cell.initial_state(self.batch_size, tf.float32, trainable=True)
-        else:
-            self._initial_rnn_state = cell.zero_state(self.batch_size, tf.float32)
+#         if self.dropout>0:
+#             cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=self._keep_prob)
         
         output, final_rnn_state = tf.nn.dynamic_rnn(cell,
                                                     inputs,
@@ -331,8 +366,18 @@ class DeepBiRNN(snt.AbstractModule):
     def _build(self, inputs):
         cells_fw = [create_rnn_cell(self) for i in range(self.num_layers)]
         cells_bw = [create_rnn_cell(self) for i in range(self.num_layers)]
+        
+        cells_fw, initial_states_fw = zip(*cells_fw)
+        cells_bw, initial_states_bw = zip(*cells_bw)
+        
+        cells_fw = list(cells_fw)
+        cells_bw = list(cells_bw)
+        initial_states_fw = list(initial_states_fw)
+        initial_states_bw = list(initial_states_bw)
          
         outputs, output_state_fw, output_state_bw = tf.contrib.rnn.stack_bidirectional_dynamic_rnn(cells_fw, cells_bw, inputs,
+                                                                                                   initial_states_fw=initial_states_fw,
+                                                                                                   initial_states_bw=initial_states_bw,
                                                                                                    sequence_length=self._seq_len,
                                                                                                    dtype=tf.float32,
                                                                                                    scope='BiMultiLSTM')

@@ -17,8 +17,10 @@ from vocab import Vocab
 from nlp.util.utils import adict, get_seed, arrayfun, adict
 from nlp.util import utils as U
 
-REGEX_NUM = r'^[0-9]*\t[0-9]\t[0-9]\t[0-9]\t(?!\s*$).+'
-REGEX_MODE = r'^[0-9]*\tm\tm\tm\t(?!\s*$).+'
+#REGEX_NUM = r'^[0-9]*\t[0-9]\t[0-9]\t[0-9]\t(?!\s*$).+'
+#REGEX_MODE = r'^[0-9]*\tm\tm\tm\t(?!\s*$).+'
+REGEX_NUM = r'^[0-9]*\t([0-9]\t)+(?!\s*$).+'
+REGEX_MODE = r'^[0-9]*\t(m\t)+(?!\s*$).+'
 
 ## for (possibly) nested lists
 def isListEmpty(inList):
@@ -47,7 +49,6 @@ class ChunkReader(object):
             self.seed = U.get_seed()
         else:
             self.seed = seed
-            self.shuf = True
         self.rng = np.random.RandomState(self.seed + U.string2rand('ChunkReader'))
     
     def next_chunk(self, file_stream):
@@ -97,7 +98,6 @@ class GlobReader(object):
             self.seed = get_seed()
         else:
             self.seed = seed
-            self.shuf = True
         self.rng = np.random.RandomState(self.seed + U.string2rand('GlobReader'))
         self.num_files = None
         self.bpf = None
@@ -142,7 +142,7 @@ returns dictionary: words->[word indices]
 set words=None, chars=None if not desired
 '''
 class TextParser(object):
-    def __init__(self, word_vocab=None, char_vocab=None, max_word_length=None, reader=None, words='w', chars='c', eos='+', sep=' '):
+    def __init__(self, word_vocab=None, char_vocab=None, max_word_length=None, reader=None, words='w', chars='c', eos='+', sep=' ', tokenize=False):
         self.word_vocab = word_vocab
         self.char_vocab = char_vocab
         self.max_word_length = max_word_length
@@ -151,10 +151,18 @@ class TextParser(object):
         self.chars = chars
         self.eos = eos
         self.sep = sep
+        self._tokenize = tokenize
+        if tokenize:
+            self._tokenize = U.tokenize
+        
+    def tokenize(self, str):
+        if self._tokenize:
+            return self._tokenize(str)
+        return str.split()
     
     ''' parses line into word/char tokens, based on vocab(s) '''
     def _parse_line(self, line, word_tokens, char_tokens):
-        toks = line.split()
+        toks = self.tokenize(line)
         
         for word in toks:
             word = Vocab.clean(word, self.max_word_length)
@@ -466,11 +474,47 @@ class EssayBatcher(object):
             self._word_count = 0
         return wc
     
+    def package(self, ids, labels, words, chars, w, c):
+        n = len(ids)
+        b = { 'n' : n }
+        
+        # if not full batch.....
+        for i in range(self.batch_size-n):
+            ids.append(ids[0])
+            labels.append(labels[0])
+            words.append(words[0])
+            chars.append(chars[0])
+        
+        b['id'] = ids                              # <-- THIS key ('id') SHOULD COME FROM FIELD_PARSER.fields
+                
+        y = np.array(labels, dtype=np.float32)
+        y = self.normalize(y)
+        y = y[...,None]#y = np.expand_dims(y, 1)
+        b['y'] = y                                  # <-- THIS key ('y') SHOULD COME FROM FIELD_PARSER.fields
+        
+        if w and not isListEmpty(words):
+            word_tensor, seq_lengths = pad_sequences(words, max_text_length=self.max_text_length)
+            b['w'] = word_tensor
+            b['x'] = b['w']
+        
+        if c and not isListEmpty(chars):
+            char_tensor, seq_lengths = pad_sequences(chars, max_text_length=self.max_text_length, max_word_length=self.max_word_length)
+            b['c'] = char_tensor
+            b['x'] = b['c']
+        
+        b['s'] = seq_lengths
+        # EVEN 'w' & 'c' SHOULD COME FROM FIELD PARSER.TEXT_PARSER.fields
+        ## just TESTING!!!!!#dsvtest
+        #max_seq_length = max(seq_lengths)
+        #seq_lengths = [max_seq_length for x in seq_lengths]    
+        
+        return adict(b)
+    
     '''
     use batch padding!
     https://r2rt.com/recurrent-neural-networks-in-tensorflow-iii-variable-length-sequences.html
     '''
-    def batch_stream(self, stop=False, skip_ids=None, w=True, c=True, min_cut=1.0):
+    def batch_stream(self, stop=False, skip_ids=None, w=True, c=True, min_cut=1.0, partial=False):
         t=None
         if min_cut<1.0:
             t = sample_dict(self.ystats.v, self.ystats.c, min_cut=min_cut)
@@ -486,34 +530,12 @@ class EssayBatcher(object):
             words.append(d.w); self._word_count+=len(d.w)
             chars.append(d.c)
             i=i+1
-            if i== self.batch_size:
-                b = {'id':ids}                              # <-- THIS key ('id') SHOULD COME FROM FIELD_PARSER.fields
-                
-                y = np.array(labels, dtype=np.float32)
-                y = self.normalize(y)
-                y = y[...,None]#y = np.expand_dims(y, 1)
-                b['y'] = y                                  # <-- THIS key ('y') SHOULD COME FROM FIELD_PARSER.fields
-                
-                if w and not isListEmpty(words):
-                    word_tensor, seq_lengths = pad_sequences(words, max_text_length=self.max_text_length)
-                    b['w'] = word_tensor
-                    b['x'] = b['w']
-                
-                if c and not isListEmpty(chars):
-                    char_tensor, seq_lengths = pad_sequences(chars, max_text_length=self.max_text_length, max_word_length=self.max_word_length)
-                    b['c'] = char_tensor
-                    b['x'] = b['c']
-                
-                # EVEN 'w' & 'c' SHOULD COME FROM FIELD PARSER.TEXT_PARSER.fields
-                
-                ## just TESTING!!!!!#dsvtest
-                max_seq_length = max(seq_lengths)
-                seq_lengths = [max_seq_length for x in seq_lengths]
-                
-                b['s'] = seq_lengths
-                
-                yield adict(b)
+            if i == self.batch_size:
+                yield self.package(ids, labels, words, chars, w, c)
                 i, ids, labels, words, chars = 0,[],[],[],[]
+        
+        if i>0 and partial:
+            yield self.package(ids, labels, words, chars, w, c)
 
 def test_text_reader():
     data_dir = '/home/david/data/ets1b/2016'
@@ -604,11 +626,50 @@ def test_ystats():
     #field_parser.sample()
     ystats = field_parser.get_ystats()
     print(ystats)
+    
+def test_essay_reader():
+    data_dir = '/home/david/data/ets1b/2016'
+    id = 63986; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
+    
+    data_dir = '/home/david/data/ats/ets'
+    id = 55433; essay_file = os.path.join(data_dir, '{0}', 'text.txt').format(id)
+    
+    regex_num = r'^[0-9]*\t([0-9]\t)+(?!\s*$).+'
+    
+    reader =  GlobReader(essay_file, chunk_size=1000, regex=regex_num, shuf=False)
+    for line in reader.line_stream(stop=True):
+        print(line)
+        break
+    
+def test_essay_parser():
+    emb_dir = '/home/david/data/embed'
+    emb_file = os.path.join(emb_dir, 'glove.6B.100d.txt')
+    
+    data_dir = '/home/david/data/ets1b/2016'
+    id = 63986; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
+    
+    data_dir = '/home/david/data/ats/ets'
+    id = 55433; essay_file = os.path.join(data_dir, '{0}', 'text.txt').format(id)
+    
+    regex_num = r'^[0-9]*\t([0-9]\t)+(?!\s*$).+'
+    reader =  GlobReader(essay_file, chunk_size=1000, regex=regex_num, shuf=False)
+    
+    E, word_vocab = Vocab.load_word_embeddings(emb_file, essay_file, min_freq=10)
+    text_parser = TextParser(word_vocab=word_vocab, tokenize=True)
+    
+    fields = {0:'id', 1:'y', -1:text_parser}
+    field_parser = FieldParser(fields, reader=reader)
+    
+    for d in field_parser.line_stream(stop=True):
+        print(d.w)
+        #break
                
 if __name__ == '__main__':
+    #test_essay_reader()
+    test_essay_parser()
 #     test_ystats()
 #     test_text_reader()
 #     test_text_batcher()
 #     test_essay_batcher_1()
-    test_essay_batcher_2()
+#     test_essay_batcher_2()
     print('done')

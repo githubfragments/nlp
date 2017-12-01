@@ -16,6 +16,21 @@ import time
 from timeit import default_timer as timer
 import tensorflow as tf
 
+from nltk.tokenize import RegexpTokenizer
+tokenizer = RegexpTokenizer(r'\w+')
+def tokenize(string):
+    tokens = tokenizer.tokenize(string.lower())
+    for index, token in enumerate(tokens):
+        if token == '@' and (index+1) < len(tokens):
+            tokens[index+1] = '@' + re.sub('[0-9]+.*', '', tokens[index+1])
+            tokens.pop(index)
+    return tokens
+
+def read_col(file, col, sep="\t", header=None, type='int32'):
+    df = pd.read_csv(file, sep=sep, header=header)#.sort_values(by=col)
+    vals = df[col].values.astype(type)
+    return vals
+    
 class adict(dict):
     ''' Attribute dictionary - a convenience data structure, similar to SimpleNamespace in python 3.3
         One can use attributes to read/write dictionary content.
@@ -98,7 +113,7 @@ def seed_random(seed=None):
     global rng
     if seed==None or seed<=0:
         seed = get_seed()
-    print('RAND_SEED == ', seed)
+    print(b_green('RAND_SEED == {}'.format(seed)))
     random.seed(seed)
     np.random.seed(seed=seed)
     rng = np.random.RandomState(seed)
