@@ -11,9 +11,10 @@ import tensorflow as tf
 import sonnet as snt
 
 from nlp.util import utils as U
+from nlp.tf_tools.attention import attention
 
-# from nlp.rwa.RWACell import RWACell         # <-- jostmey
-from nlp.rwa.rwa_cell import RWACell
+from nlp.rwa.RWACell import RWACell         # <-- jostmey
+# from nlp.rwa.rwa_cell import RWACell
 
 from nlp.rwa.rda_cell import RDACell
 
@@ -249,7 +250,9 @@ def rnn_unit(args):
         rnn = RDACell
         kwargs = { 'normalize':True }
     elif args.unit=='rhn':
-        rnn = RHN_Cell
+        #rnn = RHN_Cell
+        rnn = rnn_cell_modern.HighwayRNNCell
+        kwargs = { 'num_highway_layers' : args.rhn_highway_layers }
     return rnn, kwargs
 
 def get_initial_state(cell, args):
@@ -272,9 +275,12 @@ def create_rnn_cell(args):
     #cell = tf.contrib.rnn.HighwayWrapper(cell)
     #cell = tf.contrib.rnn.AttentionCellWrapper(cell, attn_length=10, attn_size=100)
     
-    if args.dropout>0:
-        cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=args._keep_prob)
-        #cell = tf.contrib.rnn.DropoutWrapper(cell, input_keep_prob=args._keep_prob)
+    if abs(args.dropout)>0:
+        if args.dropout<0:
+            cell = tf.contrib.rnn.DropoutWrapper(cell, input_keep_prob=args._keep_prob)
+        else:
+            cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=args._keep_prob)
+
         #variational_recurrent=True
         
     return cell, initial_state
@@ -287,6 +293,7 @@ class DeepRNN(snt.AbstractModule):
                  forget_bias=0.0,
                  seq_len=None,
                  train_initial_state=False,
+                 rhn_highway_layers=3,
                  unit='lstm',
                  name="deep_rnn"):
         super(DeepRNN, self).__init__(name=name)
@@ -297,10 +304,12 @@ class DeepRNN(snt.AbstractModule):
         self.forget_bias = forget_bias
         self._seq_len = seq_len
         self.train_initial_state = train_initial_state
+        self.rhn_highway_layers = rhn_highway_layers
         self.unit = unit
+        self.name = name
         
         with self._enter_variable_scope():
-            self._keep_prob = tf.placeholder_with_default(1.0-self.dropout, shape=())
+            self._keep_prob = tf.placeholder_with_default(1.0-abs(self.dropout), shape=())
             if seq_len is None:
                 self._seq_len = tf.placeholder(tf.int32, [batch_size])
 
@@ -313,15 +322,18 @@ class DeepRNN(snt.AbstractModule):
         else:
             cell, self._initial_rnn_state = create_rnn_cell(self)
 
-#         if self.dropout>0:
-#             cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=self._keep_prob)
+        if self.dropout<0:
+            cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=self._keep_prob)
         
-        output, final_rnn_state = tf.nn.dynamic_rnn(cell,
-                                                    inputs,
-                                                    dtype=tf.float32,
-                                                    sequence_length=self._seq_len,
-                                                    initial_state=self._initial_rnn_state)
-        return output, final_rnn_state
+        output, self._final_rnn_state = tf.nn.dynamic_rnn(cell,
+                                                          inputs,
+                                                          dtype=tf.float32,
+                                                          sequence_length=self._seq_len,
+                                                          initial_state=self._initial_rnn_state)
+        
+        tf.summary.histogram('{}_output'.format(self.name), output)
+        
+        return output#, final_rnn_state
     
     @property
     def seq_len(self):
@@ -335,6 +347,11 @@ class DeepRNN(snt.AbstractModule):
     def initial_rnn_state(self):
         self._ensure_is_connected()
         return self._initial_rnn_state
+    
+    @property
+    def final_rnn_state(self):
+        self._ensure_is_connected()
+        return self._final_rnn_state
 
 ###############################################################################
 
@@ -346,17 +363,20 @@ class DeepBiRNN(snt.AbstractModule):
                  forget_bias=0.0,
                  seq_len=None,
                  train_initial_state=False,
+                 rhn_highway_layers=3,
                  unit='lstm',
                  name="deep_bi_rnn"):
         super(DeepBiRNN, self).__init__(name=name)
         self.rnn_size = rnn_size
         self.num_layers = num_layers
         self.batch_size = batch_size
-        self.dropout = dropout
+        self.dropout = abs(dropout)
         self.forget_bias = forget_bias
         self._seq_len = seq_len
         self.train_initial_state = train_initial_state
+        self.rhn_highway_layers = rhn_highway_layers
         self.unit = unit
+        self.name = name
         
         with self._enter_variable_scope():
             self._keep_prob = tf.placeholder_with_default(1.0, shape=())
@@ -375,13 +395,12 @@ class DeepBiRNN(snt.AbstractModule):
         initial_states_fw = list(initial_states_fw)
         initial_states_bw = list(initial_states_bw)
          
-        outputs, output_state_fw, output_state_bw = tf.contrib.rnn.stack_bidirectional_dynamic_rnn(cells_fw, cells_bw, inputs,
-                                                                                                   initial_states_fw=initial_states_fw,
-                                                                                                   initial_states_bw=initial_states_bw,
-                                                                                                   sequence_length=self._seq_len,
-                                                                                                   dtype=tf.float32,
-                                                                                                   scope='BiMultiLSTM')
-        return outputs, (output_state_fw, output_state_bw)
+        outputs, self.output_state_fw, self.output_state_bw = tf.contrib.rnn.stack_bidirectional_dynamic_rnn(cells_fw, cells_bw, inputs,
+                                                                                                             initial_states_fw=initial_states_fw,
+                                                                                                             initial_states_bw=initial_states_bw,
+                                                                                                             sequence_length=self._seq_len,
+                                                                                                             dtype=tf.float32)
+        return outputs
     
     @property
     def seq_len(self):
@@ -391,6 +410,149 @@ class DeepBiRNN(snt.AbstractModule):
     def keep_prob(self):
         return self._keep_prob
     
+    @property
+    def final_rnn_state(self):
+        self._ensure_is_connected()
+        return (self.output_state_fw, self.output_state_bw)
+
+''' simple sonnet wrapper for reshaping'''
+class Reshape(snt.AbstractModule):
+    def __init__(self,
+                 batch_size=128,
+                 num_unroll_steps=None,
+                 name="reshape"):
+        super(Reshape, self).__init__(name=name)
+        self.batch_size = batch_size
+        self.num_unroll_steps = num_unroll_steps
+    
+    def _build(self, inputs):
+        dim = inputs.get_shape().as_list()[1]
+        return tf.reshape(inputs, [self.batch_size, self.num_unroll_steps, dim])    
+
+''' simple sonnet wrapper for aggregation'''
+class Aggregation(snt.AbstractModule):
+    def __init__(self,
+                 FLAGS=None,
+                 seq_len=None,
+                 name="aggregation"):
+        super(Aggregation, self).__init__(name=name)
+        self.FLAGS = FLAGS
+        self.seq_len = seq_len
+        self.name = name
+    
+    def _build(self, inputs):
+        if self.FLAGS.att_size>0:
+            output, alphas = attention(inputs, self.FLAGS.att_size, return_alphas=True)
+        elif self.FLAGS.mean_pool: ## use mean pooled rnn states
+            output = tf.reduce_mean(inputs, axis=1)
+        else: ## otherwise just use final rnn state
+            output = tf.gather_nd(inputs, tf.stack([tf.range(self.FLAGS.batch_size), 
+                                                    self.seq_len-1], axis=1))
+        
+        tf.summary.histogram('{}_output'.format(self.name), output)
+        
+        return output
+    
+class Linear(snt.AbstractModule):
+    def __init__(self, input_dim, output_dim, name="linear"):
+        super(Linear, self).__init__(name=name)
+        self.name = name
+        
+        with self._enter_variable_scope():
+            self.W = tf.get_variable('W', [input_dim, output_dim], )
+            self.b = tf.get_variable('b', [output_dim], initializer=tf.constant_initializer(0.))
+    
+    def _build(self, inputs):
+        output = tf.matmul(inputs, self.W) + self.b
+        tf.summary.histogram('{}_output'.format(self.name), output)
+        return output
+
+class Model(snt.AbstractModule):
+    def __init__(self,
+                 FLAGS=None,
+                 embed_word=True,
+                 embed_matrix=None,
+                 max_word_length=None,
+                 char_vocab=None,
+                 name="model"):
+        super(Model, self).__init__(name=name)
+        self.FLAGS = FLAGS
+        self.embed_word = embed_word
+        self.embed_matrix = embed_matrix
+        self.max_word_length = max_word_length
+        self.char_vocab = char_vocab
+        
+        with self._enter_variable_scope():
+            modules = []
+        
+            ##################################################
+            if self.embed_word:
+                embed_module = snt.Embed(existing_vocab=self.embed_matrix, trainable=True)
+                modules.append(embed_module)
+            else:
+                ## char embed ##
+                char_embed_module = CharEmbed(vocab_size=self.char_vocab.size,#char_vocab.size,
+                                              embed_dim=self.FLAGS.char_embed_size, 
+                                              max_word_length=self.max_word_length,
+                                              name='char_embed_b')
+                modules.append(char_embed_module)
+                
+                ## tdnn ##
+                tdnn_module = TDNN(self.FLAGS.kernel_widths, 
+                                   self.FLAGS.kernel_features, 
+                                   initializer=0, 
+                                   name='TDNN')
+                modules.append(tdnn_module)
+                
+                ## reshape ##
+                num_unroll_steps = tf.shape(inputs)[1]
+                reshape_module = Reshape(batch_size=self.FLAGS.batch_size,
+                                         num_unroll_steps=num_unroll_steps)
+                modules.append(reshape_module)
+                
+            ##################################################
+            RNN = DeepRNN
+            if self.FLAGS.bidirectional:
+                RNN = DeepBiRNN
+            self.rnn_module = RNN(rnn_size=self.FLAGS.rnn_dim,
+                                  num_layers=self.FLAGS.rnn_layers,
+                                  batch_size=self.FLAGS.batch_size,
+                                  dropout=self.FLAGS.dropout,
+                                  train_initial_state=self.FLAGS.train_initial_state,
+                                  unit=self.FLAGS.rnn_unit,
+                                  rhn_highway_layers=self.FLAGS.rhn_highway_layers
+                                  )
+            modules.append(self.rnn_module)
+            self._seq_len = self.rnn_module.seq_len
+            self._keep_prob = self.rnn_module.keep_prob
+            
+            ##################################################
+            agg_module = Aggregation(self.FLAGS, self.seq_len)
+            modules.append(agg_module)
+            
+            ##################################################
+            lin_module = Linear(input_dim=self.FLAGS.rnn_dim, 
+                                output_dim=1, 
+                                name='linear')
+            modules.append(lin_module)
+            modules.append(tf.nn.tanh)
+            
+            ##################################################
+            self.model = snt.Sequential(modules)
+    
+    @property
+    def seq_len(self):
+        return self._seq_len
+    
+    @property
+    def keep_prob(self):
+        return self._keep_prob
+       
+    def _build(self, inputs):
+        output = self.model(inputs)
+        self.final_rnn_state = self.rnn_module.final_rnn_state
+        return output
+
 #---------------------------------------------------------------------------------
 ''' EXPERIMENTAL.....'''
 #---------------------------------------------------------------------------------

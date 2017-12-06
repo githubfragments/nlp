@@ -70,17 +70,20 @@ def dot(x,y):
     #y = tf.transpose(y)
     return tf.matmul(x,y)
 
-def qwk(t,p):
-    mt = tf.reduce_mean(t)
-    mp = tf.reduce_mean(p)
-    N = tf.cast(tf.shape(t)[0], tf.float32)
-    k = 2. * N * mt * mp
-    u = 2. *dot(t,p) - k
-    v = dot(t,t) + dot(p,p) - k
-    return tf.squeeze(u / v)
-
-def qwk_loss(t,p):
-    return 1. - qwk(t,p)
+from tensorflow.python.framework import ops
+from tensorflow.python.ops import math_ops
+def kappa_loss(labels, predictions, scope=None):
+    with ops.name_scope(scope, "kappa_loss", (predictions, labels)) as scope:
+        predictions = math_ops.to_float(predictions)
+        labels = math_ops.to_float(labels)
+        predictions.get_shape().assert_is_compatible_with(labels.get_shape())
+        losses = math_ops.squared_difference(predictions, labels)
+        u = math_ops.reduce_sum(losses)
+        a = math_ops.reduce_mean(labels)
+        b = math_ops.multiply(predictions, labels - a)
+        v = math_ops.reduce_sum(b)
+        k = u / (2*v + u)
+        return k
 
 def nkappa(t,x):
     t=np.array(t,np.float32)

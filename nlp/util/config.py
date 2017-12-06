@@ -26,7 +26,7 @@ def restore_flags_from_json(file):
 
 def dump_config(flags, file):
     with open(file, 'w') as f:
-        for k, v in flags.items():
+        for k, v in sorted(flags.items()):
             if k != 'config':
                 f.write('{} \t= {}\n'.format(k,v))
                 

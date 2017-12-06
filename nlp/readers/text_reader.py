@@ -291,7 +291,7 @@ class FieldParser(object):
         d['n'] = len(y)
         d['v'] = v
         d['c'] = c
-        return adict(d)#return np.mean(y), np.std(y), np.min(y), np.max(y), len(y)
+        return adict(d)
                        
     def sample(self, sample_every=100, reader=None, stop=True):
         i=0
@@ -397,10 +397,10 @@ def nest_depth(x):
     depth = lambda L: isinstance(L, list) and max(map(depth, L))+1
     return depth(x)
         
-def pad_sequences(sequences, max_text_length=None, max_word_length=None, dtype='int32', wpad='post', cpad='post', value=0.):
+def pad_sequences(sequences, trim_words=False, max_text_length=None, max_word_length=None, dtype='int32', wpad='post', cpad='post', value=0.):
     num_samples = len(sequences)
     seq_lengths = map(len, sequences)
-    if max_text_length is None:
+    if trim_words:
         max_text_length = max(seq_lengths)
     
     sample_shape = tuple()
@@ -448,7 +448,7 @@ class EssayBatcher(object):
         if trim_words:
             self.max_text_length = None
         elif max_text_length==None:
-            self.max_text_length = reader.get_maxlen()# reader=FieldParser
+            self.max_text_length = self.reader.get_maxlen()# reader=FieldParser
             print('max essay length: {}'.format(self.max_text_length))
         if trim_chars:
             self.max_word_length = None
@@ -466,7 +466,7 @@ class EssayBatcher(object):
         
     @property
     def ymean(self):
-        return self.normalize(self.ystats.min)
+        return self.normalize(self.ystats.mean)
     
     def word_count(self, reset=True):
         wc = self._word_count
@@ -474,11 +474,21 @@ class EssayBatcher(object):
             self._word_count = 0
         return wc
     
-    def package(self, ids, labels, words, chars, w, c):
+    def batch(self, ids=None, labels=None, words=None, chars=None, w=None, c=None, trim_words=None):
+        if ids:
+            self.last = (ids, labels, words, chars, w, c)
+        else:
+            (ids, labels, words, chars, w, c) = self.last
+            
+        if trim_words==None:
+            trim_words=self.trim_words
+        if not trim_words and self.max_text_length==None:
+            self.max_text_length = self.reader.get_maxlen()
+            
         n = len(ids)
         b = { 'n' : n }
         
-        # if not full batch.....
+        # if not full batch.....just copy first item to fill
         for i in range(self.batch_size-n):
             ids.append(ids[0])
             labels.append(labels[0])
@@ -493,12 +503,12 @@ class EssayBatcher(object):
         b['y'] = y                                  # <-- THIS key ('y') SHOULD COME FROM FIELD_PARSER.fields
         
         if w and not isListEmpty(words):
-            word_tensor, seq_lengths = pad_sequences(words, max_text_length=self.max_text_length)
+            word_tensor, seq_lengths = pad_sequences(words, trim_words=trim_words, max_text_length=self.max_text_length)
             b['w'] = word_tensor
             b['x'] = b['w']
         
         if c and not isListEmpty(chars):
-            char_tensor, seq_lengths = pad_sequences(chars, max_text_length=self.max_text_length, max_word_length=self.max_word_length)
+            char_tensor, seq_lengths = pad_sequences(chars, trim_words=trim_words, max_text_length=self.max_text_length, max_word_length=self.max_word_length)
             b['c'] = char_tensor
             b['x'] = b['c']
         
@@ -514,7 +524,7 @@ class EssayBatcher(object):
     use batch padding!
     https://r2rt.com/recurrent-neural-networks-in-tensorflow-iii-variable-length-sequences.html
     '''
-    def batch_stream(self, stop=False, skip_ids=None, w=True, c=True, min_cut=1.0, partial=False):
+    def batch_stream(self, stop=False, skip_ids=None, w=True, c=True, min_cut=1.0, partial=False, trim_words=None):
         t=None
         if min_cut<1.0:
             t = sample_dict(self.ystats.v, self.ystats.c, min_cut=min_cut)
@@ -531,11 +541,11 @@ class EssayBatcher(object):
             chars.append(d.c)
             i=i+1
             if i == self.batch_size:
-                yield self.package(ids, labels, words, chars, w, c)
+                yield self.batch(ids, labels, words, chars, w, c, trim_words)
                 i, ids, labels, words, chars = 0,[],[],[],[]
         
         if i>0 and partial:
-            yield self.package(ids, labels, words, chars, w, c)
+            yield self.batch(ids, labels, words, chars, w, c, trim_words)
 
 def test_text_reader():
     data_dir = '/home/david/data/ets1b/2016'
