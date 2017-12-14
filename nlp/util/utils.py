@@ -39,6 +39,20 @@ class adict(dict):
         dict.__init__(self, *av, **kav)
         self.__dict__ = self
 
+def ps(x, s):
+    print('{} : {}'.format(s, x.shape))
+    
+def softmask(x, axis=-1, mask=None):
+    x_max = tf.reduce_max(x, axis=axis, keep_dims=True)
+    x = x - x_max
+    ex = tf.exp(x)
+    
+    if mask!=None:
+        ex = tf.multiply(ex, mask)
+        
+    es = tf.reduce_sum(ex, axis=axis, keep_dims=True)
+    return ex/es
+    
 def memoize(f):
     """ Memoization decorator for a function taking one or more arguments. """
     class memodict(dict):

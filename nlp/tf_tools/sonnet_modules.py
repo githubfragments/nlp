@@ -11,7 +11,10 @@ import tensorflow as tf
 import sonnet as snt
 
 from nlp.util import utils as U
-from nlp.tf_tools.attention import attention
+from nlp.util.utils import ps
+
+from nlp.tf_tools.attn1 import Attn1
+from nlp.tf_tools.attn2 import Attn2
 
 from nlp.rwa.RWACell import RWACell         # <-- jostmey
 # from nlp.rwa.rwa_cell import RWACell
@@ -231,11 +234,11 @@ def rnn_unit(args):
     if args.unit=='snt.lstm':
         rnn = snt.LSTM
         kwargs = { 'forget_bias':args.forget_bias }
-    elif args.unit=='snt.gru':
-        rnn = snt.GRU
     elif args.unit=='lstm':
         rnn = tf.nn.rnn_cell.LSTMCell
         kwargs = { 'forget_bias':args.forget_bias, 'reuse':False, 'state_is_tuple':True }
+    elif args.unit=='snt.gru':
+        rnn = snt.GRU
     elif args.unit=='gru':
         rnn = tf.nn.rnn_cell.GRUCell
         kwargs = { 'reuse':False }
@@ -252,7 +255,9 @@ def rnn_unit(args):
     elif args.unit=='rhn':
         #rnn = RHN_Cell
         rnn = rnn_cell_modern.HighwayRNNCell
-        kwargs = { 'num_highway_layers' : args.rhn_highway_layers }
+        kwargs = { 'num_highway_layers' : args.FLAGS.rhn_highway_layers,
+                   'use_inputs_on_each_layer' : args.FLAGS.rhn_inputs,
+                   'use_kronecker_reparameterization' : args.FLAGS.rhn_kronecker }
     return rnn, kwargs
 
 def get_initial_state(cell, args):
@@ -286,32 +291,27 @@ def create_rnn_cell(args):
     return cell, initial_state
 
 class DeepRNN(snt.AbstractModule):
-    def __init__(self, rnn_size,
-                 num_layers=1,
-                 batch_size=128, 
-                 dropout=0.0,
-                 forget_bias=0.0,
+    def __init__(self, 
+                 FLAGS=None,
                  seq_len=None,
-                 train_initial_state=False,
-                 rhn_highway_layers=3,
-                 unit='lstm',
+                 forget_bias=0.,
                  name="deep_rnn"):
         super(DeepRNN, self).__init__(name=name)
-        self.rnn_size = rnn_size
-        self.num_layers = num_layers
-        self.batch_size = batch_size
-        self.dropout = dropout
-        self.forget_bias = forget_bias
+        self.FLAGS = FLAGS
+        self.rnn_size = FLAGS.rnn_dim
+        self.num_layers = FLAGS.rnn_layers
+        self.batch_size = FLAGS.batch_size
+        self.dropout = FLAGS.dropout
+        self.train_initial_state = FLAGS.train_initial_state
+        self.unit = FLAGS.rnn_unit
         self._seq_len = seq_len
-        self.train_initial_state = train_initial_state
-        self.rhn_highway_layers = rhn_highway_layers
-        self.unit = unit
+        self.forget_bias = forget_bias
         self.name = name
         
         with self._enter_variable_scope():
             self._keep_prob = tf.placeholder_with_default(1.0-abs(self.dropout), shape=())
             if seq_len is None:
-                self._seq_len = tf.placeholder(tf.int32, [batch_size])
+                self._seq_len = tf.placeholder(tf.int32, [self.batch_size])
 
     def _build(self, inputs):
         if self.num_layers > 1:
@@ -329,7 +329,8 @@ class DeepRNN(snt.AbstractModule):
                                                           inputs,
                                                           dtype=tf.float32,
                                                           sequence_length=self._seq_len,
-                                                          initial_state=self._initial_rnn_state)
+                                                          initial_state=self._initial_rnn_state
+                                                          )
         
         tf.summary.histogram('{}_output'.format(self.name), output)
         
@@ -351,7 +352,15 @@ class DeepRNN(snt.AbstractModule):
     @property
     def final_rnn_state(self):
         self._ensure_is_connected()
-        return self._final_rnn_state
+        
+        if self.unit=='snt.lstm':
+            return self._final_rnn_state[1]
+        elif self.unit=='lstm':
+            return self._final_rnn_state.c
+        else:
+            return self._final_rnn_state
+        
+        #return tf.concat([self._final_rnn_state[0], self._final_rnn_state[1]], axis=1)
 
 ###############################################################################
 
@@ -429,43 +438,216 @@ class Reshape(snt.AbstractModule):
         dim = inputs.get_shape().as_list()[1]
         return tf.reshape(inputs, [self.batch_size, self.num_unroll_steps, dim])    
 
+def softmask(x, axis=-1, mask=None):
+    x_max = tf.reduce_max(x, axis=axis, keep_dims=True)
+    x = x - x_max
+    ex = tf.exp(x)
+    
+    if mask!=None:
+        ex = tf.multiply(ex, mask)
+        
+    es = tf.reduce_sum(ex, axis=axis, keep_dims=True)
+    return ex/es
+
+class Linear(snt.AbstractModule):
+    def __init__(self, output_dim, init_std=0.1, init_bias=None, name="linear"):
+        super(Linear, self).__init__(name=name)
+        self.output_dim = output_dim
+        self.name = name
+        
+        with self._enter_variable_scope():
+            self.w_init = tf.truncated_normal_initializer(stddev=init_std)
+            if init_bias is None:
+                self.b_init = tf.truncated_normal_initializer(stddev=init_std)
+            else:
+                self.b_init = tf.constant_initializer(init_bias)
+    
+    def _build(self, inputs):
+        d = inputs.shape[-1].value
+        W = tf.get_variable('W', shape=[d, self.output_dim], initializer=self.w_init)
+        b = tf.get_variable('b', shape=[self.output_dim], initializer=self.b_init)
+        
+        ''' build einsum index equation '''
+        dim = len(inputs.shape)
+        q1 = 'ij,jk'
+        q2 = 'ik'
+        for i in range(dim-2):
+            c = chr(i+97)
+            q1 = c+q1
+            q2 = c+q2
+        q = '{}->{}'.format(q1,q2)
+        #print(q)
+        
+        ''' multiply '''
+        output = tf.einsum(q, inputs, W) + b
+        
+        #tf.summary.histogram('{}_output'.format(self.name), output)
+        return output
+  
+class Attention(snt.AbstractModule):
+    def __init__(self, FLAGS,
+                 final_rnn_state=None,
+                 name="attention"):
+        super(Attention, self).__init__(name=name)
+        self.FLAGS = FLAGS
+        self.final_rnn_state = final_rnn_state
+    
+    def build2(self, inputs):
+        A = self.FLAGS.att_size
+        D = inputs.shape[-1].value # D value - hidden size of the RNN layer
+        
+        mask = tf.cast(tf.abs(tf.reduce_sum(inputs, axis=2))>0, tf.float32)
+        
+        '''# Linear Layer '''
+        w_init = tf.truncated_normal_initializer(stddev=self.FLAGS.att_std)
+        b_init = tf.truncated_normal_initializer(stddev=self.FLAGS.att_std) # b_init = tf.constant_initializer(0.)
+        
+#         ## Linear 1
+#         W = tf.get_variable('W', shape=[D, A], initializer=w_init)
+#         b = tf.get_variable('b', shape=[A], initializer=b_init)
+#         z = tf.tensordot(inputs, W, axes=1) + b # z = tf.matmul(inputs, W) + b
+        
+        ## Linear 2
+        lin_module = snt.Linear(output_size=A, initializers={'w':w_init, 'b':b_init})
+        z = lin_module(inputs)
+        
+        
+        v = tf.tanh(z)
+        
+        #####
+        u = tf.get_variable('u', shape=[A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.att_std))
+        
+        ''' ??? '''
+        M = tf.get_variable('M', shape=[D, A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.att_std))
+        m = tf.get_variable('m', shape=[A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.att_std))
+        p = tf.get_variable('p', shape=[A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.att_std))
+        q = tf.tanh(tf.tensordot(self.final_rnn_state, M, axes=1) + m)
+        s = tf.get_variable('s', shape=[A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.att_std))
+        p = tf.tensordot(q, s, axes=1)
+        
+        ''' softmax '''
+        beta = tf.tensordot(v, u, axes=1)
+        
+        beta = beta * tf.expand_dims(p, 1)
+        
+        alpha = softmask(beta, mask=mask)
+        
+        ''' attn pooling '''
+        output = tf.reduce_sum(inputs * tf.expand_dims(alpha, -1), 1)
+        
+        return output
+    
+    def build1(self, inputs):
+        A = self.FLAGS.att_size
+        D = inputs.shape[-1].value # D value - hidden size of the RNN layer
+        mask = tf.cast(tf.abs(tf.reduce_sum(inputs, axis=2))>0, tf.float32)
+
+        '''# Linear Layer '''
+        
+#         ## Linear 1
+#         b_init = tf.truncated_normal_initializer(stddev=self.FLAGS.att_std) 
+#         #b_init = tf.constant_initializer(0.)
+#         W = tf.get_variable('W', shape=[D, A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.att_std))
+#         b = tf.get_variable('b', shape=[A], initializer=b_init)
+#         #z = tf.tensordot(inputs, W, axes=1) + b # z = tf.matmul(inputs, W) + b
+#         z = tf.einsum('aij,jk->aik', inputs, W)
+        
+        ## Linear 2
+        lin_module = Linear(output_dim=A, init_std=self.FLAGS.att_std, init_bias=0.)
+        z = lin_module(inputs)
+        
+        ''' softmax '''
+        v = tf.tanh(z)
+        u = tf.get_variable('u', shape=[A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.att_std))
+         
+        #beta = tf.tensordot(v, u, axes=1)
+        beta = tf.einsum('ijk,k->ij', v, u)
+        
+        alpha = softmask(beta, mask=mask)
+        
+        ''' attn pooling '''
+        output = tf.reduce_sum(inputs * tf.expand_dims(alpha, -1), 1)
+        
+        #######
+        ps(inputs, 'inputs')
+        ps(z, 'z')
+        ps(v, 'v')
+        ps(beta, 'beta')
+        ps(alpha, 'alpha')
+        ps(output, 'output')
+        
+        return output
+    
+    def _build(self, inputs):
+        return self.build1(inputs)
+        #return self.build2(inputs)
+    
+
 ''' simple sonnet wrapper for aggregation'''
 class Aggregation(snt.AbstractModule):
     def __init__(self,
                  FLAGS=None,
                  seq_len=None,
+                 final_rnn_state=None,
                  name="aggregation"):
         super(Aggregation, self).__init__(name=name)
         self.FLAGS = FLAGS
         self.seq_len = seq_len
+        self.final_rnn_state = final_rnn_state
         self.name = name
     
+    def dynamic_mean(self, x, n):
+        m = tf.reduce_sum(x, axis=1)
+        return m / tf.expand_dims(tf.cast(n, tf.float32), 1)
+    
     def _build(self, inputs):
-        if self.FLAGS.att_size>0:
-            output, alphas = attention(inputs, self.FLAGS.att_size, return_alphas=True)
+        if self.FLAGS.att_type>-1:
+            
+            if self.FLAGS.att_type==0:
+                self._attn_module = Attention(self.FLAGS, final_rnn_state=self.final_rnn_state)
+            elif self.FLAGS.att_type==1:
+                self._attn_module = Attn1(self.FLAGS)
+            elif self.FLAGS.att_type==2:
+                self._attn_module = Attn2(self.FLAGS, final_rnn_state=self.final_rnn_state, seq_len=self.seq_len)
+            
+            output = self._attn_module(inputs)
+            
         elif self.FLAGS.mean_pool: ## use mean pooled rnn states
+            #output = self.dynamic_mean(inputs, self.seq_len)
             output = tf.reduce_mean(inputs, axis=1)
+            
         else: ## otherwise just use final rnn state
-            output = tf.gather_nd(inputs, tf.stack([tf.range(self.FLAGS.batch_size), 
-                                                    self.seq_len-1], axis=1))
+            #output = tf.gather_nd(inputs, tf.stack([tf.range(self.FLAGS.batch_size), self.seq_len-1], axis=1))
+            output = self.final_rnn_state
         
         tf.summary.histogram('{}_output'.format(self.name), output)
         
         return output
     
-class Linear(snt.AbstractModule):
-    def __init__(self, input_dim, output_dim, name="linear"):
-        super(Linear, self).__init__(name=name)
-        self.name = name
+    @property
+    def attn_module(self):
+        self._ensure_is_connected()
+        try:
+            return self._attn_module
+        except AttributeError:
+            return None
         
-        with self._enter_variable_scope():
-            self.W = tf.get_variable('W', [input_dim, output_dim], )
-            self.b = tf.get_variable('b', [output_dim], initializer=tf.constant_initializer(0.))
-    
-    def _build(self, inputs):
-        output = tf.matmul(inputs, self.W) + self.b
-        tf.summary.histogram('{}_output'.format(self.name), output)
-        return output
+    @property
+    def outputs(self):
+        self._ensure_is_connected()
+        try:
+            return self.attn_module.outputs
+        except AttributeError:
+            return []
+        
+    @property
+    def N(self):
+        self._ensure_is_connected()
+        try:
+            return self.attn_module.outputs[-2]
+        except AttributeError:
+            return []
+
 
 class Model(snt.AbstractModule):
     def __init__(self,
@@ -474,7 +656,8 @@ class Model(snt.AbstractModule):
                  embed_matrix=None,
                  max_word_length=None,
                  char_vocab=None,
-                 name="model"):
+                 inputs=None,
+                 name="Model"):
         super(Model, self).__init__(name=name)
         self.FLAGS = FLAGS
         self.embed_word = embed_word
@@ -482,77 +665,187 @@ class Model(snt.AbstractModule):
         self.max_word_length = max_word_length
         self.char_vocab = char_vocab
         
-        with self._enter_variable_scope():
-            modules = []
-        
-            ##################################################
-            if self.embed_word:
-                embed_module = snt.Embed(existing_vocab=self.embed_matrix, trainable=True)
-                modules.append(embed_module)
+#         with self._enter_variable_scope():
+#             modules = []
+#         
+#             ##################################################
+#             if self.embed_word:
+#                 word_embed_module = snt.Embed(existing_vocab=self.embed_matrix, trainable=True)
+#                 modules.append(word_embed_module)
+#             else:
+#                 ## char embed ##
+#                 char_embed_module = CharEmbed(vocab_size=self.char_vocab.size,#char_vocab.size,
+#                                               embed_dim=self.FLAGS.char_embed_size, 
+#                                               max_word_length=self.max_word_length,
+#                                               name='char_embed_b')
+#                 modules.append(char_embed_module)
+#                 
+#                 ## tdnn ##
+#                 tdnn_module = TDNN(self.FLAGS.kernel_widths, 
+#                                    self.FLAGS.kernel_features, 
+#                                    initializer=0, 
+#                                    name='TDNN')
+#                 modules.append(tdnn_module)
+#                 
+#                 ## reshape ##
+#                 num_unroll_steps = tf.shape(inputs)[1]
+#                 reshape_module = Reshape(batch_size=self.FLAGS.batch_size,
+#                                          num_unroll_steps=num_unroll_steps)
+#                 modules.append(reshape_module)
+#                 
+#             ##################################################
+#             RNN = DeepRNN
+#             if self.FLAGS.bidirectional:
+#                 RNN = DeepBiRNN
+#             self.rnn_module = RNN(rnn_size=self.FLAGS.rnn_dim,
+#                                   num_layers=self.FLAGS.rnn_layers,
+#                                   batch_size=self.FLAGS.batch_size,
+#                                   dropout=self.FLAGS.dropout,
+#                                   train_initial_state=self.FLAGS.train_initial_state,
+#                                   unit=self.FLAGS.rnn_unit,
+#                                   rhn_highway_layers=self.FLAGS.rhn_highway_layers
+#                                   )
+#             modules.append(self.rnn_module)
+#             self._seq_len = self.rnn_module.seq_len
+#             self._keep_prob = self.rnn_module.keep_prob
+#             
+#             ##################################################
+#             self.agg_module = Aggregation(self.FLAGS, seq_len=self.seq_len, final_rnn_state=self.final_rnn_state)
+#             modules.append(self.agg_module)
+#             
+#             ##################################################
+#             lin_module = Linear(input_dim=self.FLAGS.rnn_dim, 
+#                                 output_dim=1, 
+#                                 name='linear')
+#             modules.append(lin_module)
+#             modules.append(tf.nn.tanh)
+#             
+#             ##################################################
+#             #self.model = snt.Sequential(modules)
+#             self.layers = tuple(modules)
+    
+    def build_1(self, inputs, layers):
+        model = snt.Sequential(layers)
+        output = model(inputs)
+        return output
+    
+    def build_2(self, inputs, layers):
+        outputs = []
+        net = inputs
+        for layer in layers:
+            if isinstance(net, tuple):
+                net = layer(*net)
             else:
-                ## char embed ##
-                char_embed_module = CharEmbed(vocab_size=self.char_vocab.size,#char_vocab.size,
-                                              embed_dim=self.FLAGS.char_embed_size, 
-                                              max_word_length=self.max_word_length,
-                                              name='char_embed_b')
-                modules.append(char_embed_module)
-                
-                ## tdnn ##
-                tdnn_module = TDNN(self.FLAGS.kernel_widths, 
-                                   self.FLAGS.kernel_features, 
-                                   initializer=0, 
-                                   name='TDNN')
-                modules.append(tdnn_module)
-                
-                ## reshape ##
-                num_unroll_steps = tf.shape(inputs)[1]
-                reshape_module = Reshape(batch_size=self.FLAGS.batch_size,
-                                         num_unroll_steps=num_unroll_steps)
-                modules.append(reshape_module)
-                
-            ##################################################
-            RNN = DeepRNN
-            if self.FLAGS.bidirectional:
-                RNN = DeepBiRNN
-            self.rnn_module = RNN(rnn_size=self.FLAGS.rnn_dim,
-                                  num_layers=self.FLAGS.rnn_layers,
-                                  batch_size=self.FLAGS.batch_size,
-                                  dropout=self.FLAGS.dropout,
-                                  train_initial_state=self.FLAGS.train_initial_state,
-                                  unit=self.FLAGS.rnn_unit,
-                                  rhn_highway_layers=self.FLAGS.rhn_highway_layers
-                                  )
-            modules.append(self.rnn_module)
-            self._seq_len = self.rnn_module.seq_len
-            self._keep_prob = self.rnn_module.keep_prob
+                net = layer(net)
+            outputs.append(net)
+        
+        return tuple(outputs)
+    
+    def build(self, inputs):
+        outputs = inputs
+        
+        if self.embed_word:
+            word_embed_module = snt.Embed(existing_vocab=self.embed_matrix, trainable=True)
+            outputs = word_embed_module(outputs)
+        else:
+            ## char embed ##
+            char_embed_module = CharEmbed(vocab_size=self.char_vocab.size,#char_vocab.size,
+                                          embed_dim=self.FLAGS.char_embed_size, 
+                                          max_word_length=self.max_word_length,
+                                          name='char_embed_b')
+            outputs = char_embed_module(outputs)
             
-            ##################################################
-            agg_module = Aggregation(self.FLAGS, self.seq_len)
-            modules.append(agg_module)
+            ## tdnn ##
+            tdnn_module = TDNN(self.FLAGS.kernel_widths, 
+                               self.FLAGS.kernel_features, 
+                               initializer=0, 
+                               name='TDNN')
+            outputs = tdnn_module(outputs)
             
-            ##################################################
-            lin_module = Linear(input_dim=self.FLAGS.rnn_dim, 
-                                output_dim=1, 
-                                name='linear')
-            modules.append(lin_module)
-            modules.append(tf.nn.tanh)
+            ## reshape ##
+            num_unroll_steps = tf.shape(inputs)[1]
+            reshape_module = Reshape(batch_size=self.FLAGS.batch_size,
+                                     num_unroll_steps=num_unroll_steps)
+            outputs = reshape_module(outputs)
             
-            ##################################################
-            self.model = snt.Sequential(modules)
+        ##################################################
+        RNN = DeepRNN
+        if self.FLAGS.bidirectional:
+            RNN = DeepBiRNN
+            
+        self._rnn_module = RNN(FLAGS=self.FLAGS)
+        outputs = self._rnn_module(outputs)
+        
+        ##################################################
+        self._agg_module = Aggregation(self.FLAGS, 
+                                       seq_len=self._rnn_module.seq_len, 
+                                       final_rnn_state=self._rnn_module.final_rnn_state)
+        outputs = self._agg_module(outputs)
+        
+        ##################################################
+
+#         ## linear 1
+#         dim = self.FLAGS.rnn_dim
+#         #dim = tf.shape(outputs)[-1]
+#         #dim = outputs.get_shape().as_list()[-1]
+#         if self.FLAGS.att_type==2:
+#             dim = outputs.shape[-1]
+#         lin_module = Linear(input_dim=dim, 
+#                             output_dim=1, 
+#                             name='linear')
+        
+        ## linear 2
+        lin_module = snt.Linear(output_size=1, initializers={'w':tf.truncated_normal_initializer(stddev=self.FLAGS.att_std),
+                                                             'b':tf.truncated_normal_initializer(stddev=self.FLAGS.att_std),
+                                                             #'b':tf.constant_initializer(0.),
+                                                             })
+        
+        ###########
+        outputs = lin_module(outputs)
+        ##################################################
+        
+        ## tanh
+        outputs = tf.nn.tanh(outputs)
+        
+        return outputs
+              
+    def _build(self, inputs):
+        #outputs = self.build_1(inputs, self.layers)
+        #outputs = self.build_2(inputs, self.layers)
+        outputs = self.build(inputs)
+        
+        return outputs
+    
+    @property
+    def rnn_module(self):
+        self._ensure_is_connected()
+        return self._rnn_module
     
     @property
     def seq_len(self):
-        return self._seq_len
+        return self.rnn_module.seq_len
     
     @property
     def keep_prob(self):
-        return self._keep_prob
-       
-    def _build(self, inputs):
-        output = self.model(inputs)
-        self.final_rnn_state = self.rnn_module.final_rnn_state
-        return output
-
+        return self.rnn_module.keep_prob
+    
+    @property
+    def final_rnn_state(self):
+        return self.rnn_module.final_rnn_state
+    
+    @property
+    def agg_module(self):
+        self._ensure_is_connected()
+        return self._agg_module
+    
+    @property
+    def attn_outputs(self):
+        return self.agg_module.outputs
+        
+    @property
+    def attn_N(self):
+        return self.agg_module.N
+    
 #---------------------------------------------------------------------------------
 ''' EXPERIMENTAL.....'''
 #---------------------------------------------------------------------------------

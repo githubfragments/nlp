@@ -21,8 +21,10 @@ from tensorflow.contrib.rnn import RNNCell
 class HighwayRNNCell(RNNCell):
   """Highway RNN Network with multiplicative_integration"""
 
-  def __init__(self, num_units, num_highway_layers = 3, use_inputs_on_each_layer = False,
-    use_kronecker_reparameterization=False):
+  def __init__(self, num_units, 
+               num_highway_layers=3, 
+               use_inputs_on_each_layer=False,
+               use_kronecker_reparameterization=False):
     self._num_units = num_units
     self.num_highway_layers = num_highway_layers
     self.use_inputs_on_each_layer = use_inputs_on_each_layer
