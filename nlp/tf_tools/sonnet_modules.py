@@ -16,10 +16,13 @@ from nlp.util.utils import ps
 from nlp.tf_tools.attn1 import Attn1
 from nlp.tf_tools.attn2 import Attn2
 
-from nlp.rwa.RWACell import RWACell         # <-- jostmey
-# from nlp.rwa.rwa_cell import RWACell
+# from nlp.rwa.RWACell import RWACell         # <-- jostmey
+from nlp.rwa.rwa_cell import RWACell
 
 from nlp.rwa.rda_cell import RDACell
+
+# from nlp.ran.ran import RANCell
+from nlp.ran.ran_cell import RANCell
 
 from nlp.tensorflow_with_latest_papers import rnn_cell_modern
 # from nlp.recurrent_highway_networks.rhn import RHNCell
@@ -242,6 +245,13 @@ def rnn_unit(args):
     elif args.unit=='gru':
         rnn = tf.nn.rnn_cell.GRUCell
         kwargs = { 'reuse':False }
+    
+    elif args.unit=='ran':
+        rnn = RANCell
+    elif args.unit=='ran_ln':
+        rnn = RANCell
+        kwargs = { 'normalize':True }
+    
     elif args.unit=='rwa':
         rnn = RWACell
     elif args.unit=='rwa_bn':
@@ -290,6 +300,19 @@ def create_rnn_cell(args):
         
     return cell, initial_state
 
+def get_final_state(final_state, unit=None):
+        if unit=='snt.lstm':
+            return final_state[1]
+        elif unit=='lstm':
+            return final_state.c
+        else:
+            return final_state
+        
+def collapse_final_state_layers(final_state_layers, unit=None):
+    states = [get_final_state(s, unit) for s in final_state_layers]
+    #return tf.concat(states, axis=1)
+    return states[-1]
+    
 class DeepRNN(snt.AbstractModule):
     def __init__(self, 
                  FLAGS=None,
@@ -353,44 +376,46 @@ class DeepRNN(snt.AbstractModule):
     def final_rnn_state(self):
         self._ensure_is_connected()
         
-        if self.unit=='snt.lstm':
-            return self._final_rnn_state[1]
-        elif self.unit=='lstm':
-            return self._final_rnn_state.c
+        if self.num_layers > 1:
+            return collapse_final_state_layers(self._final_rnn_state, self.unit)
         else:
-            return self._final_rnn_state
-        
-        #return tf.concat([self._final_rnn_state[0], self._final_rnn_state[1]], axis=1)
+            return get_final_state(self._final_rnn_state, self.unit)
 
 ###############################################################################
 
 class DeepBiRNN(snt.AbstractModule):
-    def __init__(self, rnn_size,
-                 num_layers=1,
-                 batch_size=128, 
-                 dropout=0.0,
-                 forget_bias=0.0,
+    def __init__(self,
+                 FLAGS=None,
                  seq_len=None,
-                 train_initial_state=False,
-                 rhn_highway_layers=3,
-                 unit='lstm',
+                 forget_bias=0.,
                  name="deep_bi_rnn"):
         super(DeepBiRNN, self).__init__(name=name)
-        self.rnn_size = rnn_size
-        self.num_layers = num_layers
-        self.batch_size = batch_size
-        self.dropout = abs(dropout)
-        self.forget_bias = forget_bias
+#         self.rnn_size = rnn_size
+#         self.num_layers = num_layers
+#         self.batch_size = batch_size
+#         self.dropout = abs(dropout)
+#         self.forget_bias = forget_bias
+#         self._seq_len = seq_len
+#         self.train_initial_state = train_initial_state
+#         self.rhn_highway_layers = rhn_highway_layers
+#         self.unit = unit
+#         self.name = name
+        self.FLAGS = FLAGS
+        self.rnn_size = FLAGS.rnn_dim
+        self.num_layers = FLAGS.rnn_layers
+        self.batch_size = FLAGS.batch_size
+        self.dropout = FLAGS.dropout
+        self.train_initial_state = FLAGS.train_initial_state
+        self.unit = FLAGS.rnn_unit
         self._seq_len = seq_len
-        self.train_initial_state = train_initial_state
-        self.rhn_highway_layers = rhn_highway_layers
-        self.unit = unit
+        self.forget_bias = forget_bias
         self.name = name
+        
         
         with self._enter_variable_scope():
             self._keep_prob = tf.placeholder_with_default(1.0, shape=())
             if seq_len is None:
-                self._seq_len = tf.placeholder(tf.int32, [batch_size])
+                self._seq_len = tf.placeholder(tf.int32, [self.batch_size])
 
     def _build(self, inputs):
         cells_fw = [create_rnn_cell(self) for i in range(self.num_layers)]
@@ -422,7 +447,14 @@ class DeepBiRNN(snt.AbstractModule):
     @property
     def final_rnn_state(self):
         self._ensure_is_connected()
-        return (self.output_state_fw, self.output_state_bw)
+        #return (self.output_state_fw, self.output_state_bw)
+        if self.num_layers > 1:
+            fwd = collapse_final_state_layers(self.output_state_fw, self.unit)
+            bwd = collapse_final_state_layers(self.output_state_bw, self.unit)
+        else:
+            fwd = get_final_state(self.output_state_fw, self.unit)
+            bwd = get_final_state(self.output_state_bw, self.unit)
+        return tf.concat([fwd, bwd], axis=1)
 
 ''' simple sonnet wrapper for reshaping'''
 class Reshape(snt.AbstractModule):
@@ -450,18 +482,13 @@ def softmask(x, axis=-1, mask=None):
     return ex/es
 
 class Linear(snt.AbstractModule):
-    def __init__(self, output_dim, init_std=0.1, init_bias=None, name="linear"):
+    def __init__(self, output_dim, w_init=None, b_init=None, name="linear"):
         super(Linear, self).__init__(name=name)
         self.output_dim = output_dim
         self.name = name
-        
-        with self._enter_variable_scope():
-            self.w_init = tf.truncated_normal_initializer(stddev=init_std)
-            if init_bias is None:
-                self.b_init = tf.truncated_normal_initializer(stddev=init_std)
-            else:
-                self.b_init = tf.constant_initializer(init_bias)
-    
+        self.w_init = w_init
+        self.b_init = b_init
+                
     def _build(self, inputs):
         d = inputs.shape[-1].value
         W = tf.get_variable('W', shape=[d, self.output_dim], initializer=self.w_init)
@@ -479,11 +506,25 @@ class Linear(snt.AbstractModule):
         #print(q)
         
         ''' multiply '''
+        #output = tf.tensordot(inputs, W, axes=1) + b #
         output = tf.einsum(q, inputs, W) + b
         
         #tf.summary.histogram('{}_output'.format(self.name), output)
         return output
-  
+
+def default_initializers(std=None, bias=None):
+    if std != None:
+        w_init = tf.truncated_normal_initializer(stddev=std)
+    else:
+        w_init = tf.glorot_uniform_initializer(dtype=tf.float32)
+    
+    if bias != None:
+        b_init = tf.constant_initializer(bias)
+    else:
+        b_init = w_init
+        
+    return w_init, b_init
+
 class Attention(snt.AbstractModule):
     def __init__(self, FLAGS,
                  final_rnn_state=None,
@@ -499,13 +540,16 @@ class Attention(snt.AbstractModule):
         mask = tf.cast(tf.abs(tf.reduce_sum(inputs, axis=2))>0, tf.float32)
         
         '''# Linear Layer '''
-        w_init = tf.truncated_normal_initializer(stddev=self.FLAGS.att_std)
-        b_init = tf.truncated_normal_initializer(stddev=self.FLAGS.att_std) # b_init = tf.constant_initializer(0.)
+        w_init = tf.truncated_normal_initializer(stddev=self.FLAGS.attn_std)
+        if FLAGS.attn_b != None:
+            b_init = tf.constant_initializer(FLAGS.attn_b)
+        else:
+            b_init = tf.truncated_normal_initializer(stddev=self.FLAGS.attn_std)
         
 #         ## Linear 1
 #         W = tf.get_variable('W', shape=[D, A], initializer=w_init)
 #         b = tf.get_variable('b', shape=[A], initializer=b_init)
-#         z = tf.tensordot(inputs, W, axes=1) + b # z = tf.matmul(inputs, W) + b
+#         z = tf.tensordot(inputs, W, axes=1) + b #
         
         ## Linear 2
         lin_module = snt.Linear(output_size=A, initializers={'w':w_init, 'b':b_init})
@@ -515,14 +559,14 @@ class Attention(snt.AbstractModule):
         v = tf.tanh(z)
         
         #####
-        u = tf.get_variable('u', shape=[A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.att_std))
+        u = tf.get_variable('u', shape=[A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.attn_std))
         
         ''' ??? '''
-        M = tf.get_variable('M', shape=[D, A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.att_std))
-        m = tf.get_variable('m', shape=[A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.att_std))
-        p = tf.get_variable('p', shape=[A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.att_std))
+        M = tf.get_variable('M', shape=[D, A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.attn_std))
+        m = tf.get_variable('m', shape=[A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.attn_std))
+        p = tf.get_variable('p', shape=[A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.attn_std))
         q = tf.tanh(tf.tensordot(self.final_rnn_state, M, axes=1) + m)
-        s = tf.get_variable('s', shape=[A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.att_std))
+        s = tf.get_variable('s', shape=[A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.attn_std))
         p = tf.tensordot(q, s, axes=1)
         
         ''' softmax '''
@@ -541,24 +585,16 @@ class Attention(snt.AbstractModule):
         A = self.FLAGS.att_size
         D = inputs.shape[-1].value # D value - hidden size of the RNN layer
         mask = tf.cast(tf.abs(tf.reduce_sum(inputs, axis=2))>0, tf.float32)
-
-        '''# Linear Layer '''
-        
-#         ## Linear 1
-#         b_init = tf.truncated_normal_initializer(stddev=self.FLAGS.att_std) 
-#         #b_init = tf.constant_initializer(0.)
-#         W = tf.get_variable('W', shape=[D, A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.att_std))
-#         b = tf.get_variable('b', shape=[A], initializer=b_init)
-#         #z = tf.tensordot(inputs, W, axes=1) + b # z = tf.matmul(inputs, W) + b
-#         z = tf.einsum('aij,jk->aik', inputs, W)
-        
-        ## Linear 2
-        lin_module = Linear(output_dim=A, init_std=self.FLAGS.att_std, init_bias=0.)
+ 
+        w_init, b_init = default_initializers(std=self.FLAGS.attn_std, bias=self.FLAGS.attn_b)
+            
+        ''' Linear Layer '''
+        lin_module = Linear(output_dim=A, w_init=w_init, b_init=b_init)
         z = lin_module(inputs)
         
         ''' softmax '''
         v = tf.tanh(z)
-        u = tf.get_variable('u', shape=[A], initializer=tf.truncated_normal_initializer(stddev=self.FLAGS.att_std))
+        u = tf.get_variable('u', shape=[A], initializer=w_init)
          
         #beta = tf.tensordot(v, u, axes=1)
         beta = tf.einsum('ijk,k->ij', v, u)
@@ -613,8 +649,8 @@ class Aggregation(snt.AbstractModule):
             output = self._attn_module(inputs)
             
         elif self.FLAGS.mean_pool: ## use mean pooled rnn states
-            #output = self.dynamic_mean(inputs, self.seq_len)
-            output = tf.reduce_mean(inputs, axis=1)
+            output = self.dynamic_mean(inputs, self.seq_len)
+#             output = tf.reduce_mean(inputs, axis=1)
             
         else: ## otherwise just use final rnn state
             #output = tf.gather_nd(inputs, tf.stack([tf.range(self.FLAGS.batch_size), self.seq_len-1], axis=1))
@@ -664,65 +700,6 @@ class Model(snt.AbstractModule):
         self.embed_matrix = embed_matrix
         self.max_word_length = max_word_length
         self.char_vocab = char_vocab
-        
-#         with self._enter_variable_scope():
-#             modules = []
-#         
-#             ##################################################
-#             if self.embed_word:
-#                 word_embed_module = snt.Embed(existing_vocab=self.embed_matrix, trainable=True)
-#                 modules.append(word_embed_module)
-#             else:
-#                 ## char embed ##
-#                 char_embed_module = CharEmbed(vocab_size=self.char_vocab.size,#char_vocab.size,
-#                                               embed_dim=self.FLAGS.char_embed_size, 
-#                                               max_word_length=self.max_word_length,
-#                                               name='char_embed_b')
-#                 modules.append(char_embed_module)
-#                 
-#                 ## tdnn ##
-#                 tdnn_module = TDNN(self.FLAGS.kernel_widths, 
-#                                    self.FLAGS.kernel_features, 
-#                                    initializer=0, 
-#                                    name='TDNN')
-#                 modules.append(tdnn_module)
-#                 
-#                 ## reshape ##
-#                 num_unroll_steps = tf.shape(inputs)[1]
-#                 reshape_module = Reshape(batch_size=self.FLAGS.batch_size,
-#                                          num_unroll_steps=num_unroll_steps)
-#                 modules.append(reshape_module)
-#                 
-#             ##################################################
-#             RNN = DeepRNN
-#             if self.FLAGS.bidirectional:
-#                 RNN = DeepBiRNN
-#             self.rnn_module = RNN(rnn_size=self.FLAGS.rnn_dim,
-#                                   num_layers=self.FLAGS.rnn_layers,
-#                                   batch_size=self.FLAGS.batch_size,
-#                                   dropout=self.FLAGS.dropout,
-#                                   train_initial_state=self.FLAGS.train_initial_state,
-#                                   unit=self.FLAGS.rnn_unit,
-#                                   rhn_highway_layers=self.FLAGS.rhn_highway_layers
-#                                   )
-#             modules.append(self.rnn_module)
-#             self._seq_len = self.rnn_module.seq_len
-#             self._keep_prob = self.rnn_module.keep_prob
-#             
-#             ##################################################
-#             self.agg_module = Aggregation(self.FLAGS, seq_len=self.seq_len, final_rnn_state=self.final_rnn_state)
-#             modules.append(self.agg_module)
-#             
-#             ##################################################
-#             lin_module = Linear(input_dim=self.FLAGS.rnn_dim, 
-#                                 output_dim=1, 
-#                                 name='linear')
-#             modules.append(lin_module)
-#             modules.append(tf.nn.tanh)
-#             
-#             ##################################################
-#             #self.model = snt.Sequential(modules)
-#             self.layers = tuple(modules)
     
     def build_1(self, inputs, layers):
         model = snt.Sequential(layers)
@@ -738,7 +715,6 @@ class Model(snt.AbstractModule):
             else:
                 net = layer(net)
             outputs.append(net)
-        
         return tuple(outputs)
     
     def build(self, inputs):
@@ -777,6 +753,7 @@ class Model(snt.AbstractModule):
         outputs = self._rnn_module(outputs)
         
         ##################################################
+        
         self._agg_module = Aggregation(self.FLAGS, 
                                        seq_len=self._rnn_module.seq_len, 
                                        final_rnn_state=self._rnn_module.final_rnn_state)
@@ -784,23 +761,13 @@ class Model(snt.AbstractModule):
         
         ##################################################
 
-#         ## linear 1
+#         ## linear
 #         dim = self.FLAGS.rnn_dim
 #         #dim = tf.shape(outputs)[-1]
 #         #dim = outputs.get_shape().as_list()[-1]
-#         if self.FLAGS.att_type==2:
-#             dim = outputs.shape[-1]
-#         lin_module = Linear(input_dim=dim, 
-#                             output_dim=1, 
-#                             name='linear')
-        
-        ## linear 2
-        lin_module = snt.Linear(output_size=1, initializers={'w':tf.truncated_normal_initializer(stddev=self.FLAGS.att_std),
-                                                             'b':tf.truncated_normal_initializer(stddev=self.FLAGS.att_std),
-                                                             #'b':tf.constant_initializer(0.),
-                                                             })
-        
-        ###########
+  
+        w_init, b_init = default_initializers(std=self.FLAGS.model_std, bias=self.FLAGS.model_b)
+        lin_module = snt.Linear(output_size=1, initializers={ 'w':w_init, 'b':b_init })
         outputs = lin_module(outputs)
         ##################################################
         

@@ -15,7 +15,7 @@ def softmask(x, axis=-1, mask=None):
     #return alpha
     return [x_max, x, ex, es, alpha]
 
-def attention_orig(inputs, attention_size, init_std=0.1):
+def attention_orig(inputs, attention_size, std=0.1):
     """
     Attention mechanism layer which reduces RNN/Bi-RNN outputs with Attention vector.
 
@@ -67,9 +67,9 @@ def attention_orig(inputs, attention_size, init_std=0.1):
     hidden_size = inputs.shape[2].value  # D value - hidden size of the RNN layer
 
     # Trainable parameters
-    W_omega = tf.get_variable('W_omega', shape=[hidden_size, attention_size], initializer=tf.random_normal_initializer(stddev=init_std))
-    b_omega = tf.get_variable('b_omega', shape=[attention_size], initializer=tf.random_normal_initializer(stddev=init_std))
-    u_omega = tf.get_variable('u_omega', shape=[attention_size], initializer=tf.random_normal_initializer(stddev=init_std))
+    W_omega = tf.get_variable('W_omega', shape=[hidden_size, attention_size], initializer=tf.random_normal_initializer(stddev=std))
+    b_omega = tf.get_variable('b_omega', shape=[attention_size], initializer=tf.random_normal_initializer(stddev=std))
+    u_omega = tf.get_variable('u_omega', shape=[attention_size], initializer=tf.random_normal_initializer(stddev=std))
 
     # Applying fully connected layer with non-linear activation to each of the B*T timestamps;
     #  the shape of `v` is (B,T,D)*(D,A)=(B,T,A), where A=attention_size
@@ -121,7 +121,7 @@ def my_softmax(x, axis=-1, z=0., n=0.):
     v = ex / es
     return v, z, ez
 
-def attention(inputs, attention_size, init_std=0.1, n_init=7.0):
+def attention(inputs, attention_size, std=0.1, n_init=7.0):
 
     if isinstance(inputs, tuple):
         # In case of Bi-RNN, concatenate the forward and the backward RNN outputs.
@@ -129,9 +129,9 @@ def attention(inputs, attention_size, init_std=0.1, n_init=7.0):
 
     hidden_size = inputs.shape[2].value  # D value - hidden size of the RNN layer
     
-    W_omega = tf.get_variable('W_omega', shape=[hidden_size, attention_size], initializer=tf.random_normal_initializer(stddev=init_std))
-    b_omega = tf.get_variable('b_omega', shape=[attention_size], initializer=tf.random_normal_initializer(stddev=init_std))
-    u_omega = tf.get_variable('u_omega', shape=[attention_size], initializer=tf.random_normal_initializer(stddev=init_std))
+    W_omega = tf.get_variable('W_omega', shape=[hidden_size, attention_size], initializer=tf.random_normal_initializer(stddev=std))
+    b_omega = tf.get_variable('b_omega', shape=[attention_size], initializer=tf.random_normal_initializer(stddev=std))
+    u_omega = tf.get_variable('u_omega', shape=[attention_size], initializer=tf.random_normal_initializer(stddev=std))
 
     # Applying fully connected layer with non-linear activation to each of the B*T timestamps;
     #  the shape of `v` is (B,T,D)*(D,A)=(B,T,A), where A=attention_size
@@ -183,8 +183,8 @@ class Attn1(snt.AbstractModule):
         self.FLAGS = FLAGS
     
     def _build(self, inputs):
-        self._outputs = attention_orig(inputs, self.FLAGS.att_size, init_std=self.FLAGS.att_std)
-        #self._outputs = attention(inputs, self.FLAGS.att_size, init_std=self.FLAGS.att_std, n_init=self.FLAGS.att_n)
+        self._outputs = attention_orig(inputs, self.FLAGS.att_size, std=self.FLAGS.attn_std)
+        #self._outputs = attention(inputs, self.FLAGS.att_size, std=self.FLAGS.attn_std, n_init=self.FLAGS.att_n)
         
         if type(self._outputs) is list:
             return self._outputs[-1]
