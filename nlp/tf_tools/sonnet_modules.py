@@ -16,7 +16,7 @@ from nlp.util.utils import ps
 from nlp.tf_tools.attn1 import Attn1
 from nlp.tf_tools.attn2 import Attn2
 
-# from nlp.rwa.RWACell import RWACell         # <-- jostmey
+# from nlp.rwa.RWACell import RWACell
 from nlp.rwa.rwa_cell import RWACell
 
 from nlp.rwa.rda_cell import RDACell
@@ -25,7 +25,9 @@ from nlp.rwa.rda_cell import RDACell
 from nlp.ran.ran_cell import RANCell
 
 from nlp.tensorflow_with_latest_papers import rnn_cell_modern
-# from nlp.recurrent_highway_networks.rhn import RHNCell
+from nlp.rhn.rhn import RHNCell2 as RHNCell
+
+from nlp.rnn_cells.lru import LRUCell
 
 '''
 https://github.com/deepmind/sonnet/blob/master/sonnet/examples/rnn_shakespeare.py
@@ -245,13 +247,11 @@ def rnn_unit(args):
     elif args.unit=='gru':
         rnn = tf.nn.rnn_cell.GRUCell
         kwargs = { 'reuse':False }
-    
     elif args.unit=='ran':
         rnn = RANCell
     elif args.unit=='ran_ln':
         rnn = RANCell
         kwargs = { 'normalize':True }
-    
     elif args.unit=='rwa':
         rnn = RWACell
     elif args.unit=='rwa_bn':
@@ -263,11 +263,16 @@ def rnn_unit(args):
         rnn = RDACell
         kwargs = { 'normalize':True }
     elif args.unit=='rhn':
-        #rnn = RHN_Cell
         rnn = rnn_cell_modern.HighwayRNNCell
         kwargs = { 'num_highway_layers' : args.FLAGS.rhn_highway_layers,
                    'use_inputs_on_each_layer' : args.FLAGS.rhn_inputs,
                    'use_kronecker_reparameterization' : args.FLAGS.rhn_kronecker }
+    elif args.unit=='rhn2':
+        rnn = RHNCell
+        # num_units, in_size, is_training, depth=3
+        kwargs = { 'depth' : args.FLAGS.rhn_highway_layers }
+    elif args.unit=='lru':
+        rnn = LRUCell
     return rnn, kwargs
 
 def get_initial_state(cell, args):
@@ -447,13 +452,8 @@ class DeepBiRNN(snt.AbstractModule):
     @property
     def final_rnn_state(self):
         self._ensure_is_connected()
-        #return (self.output_state_fw, self.output_state_bw)
-        if self.num_layers > 1:
-            fwd = collapse_final_state_layers(self.output_state_fw, self.unit)
-            bwd = collapse_final_state_layers(self.output_state_bw, self.unit)
-        else:
-            fwd = get_final_state(self.output_state_fw, self.unit)
-            bwd = get_final_state(self.output_state_bw, self.unit)
+        fwd = collapse_final_state_layers(self.output_state_fw, self.unit)
+        bwd = collapse_final_state_layers(self.output_state_bw, self.unit)
         return tf.concat([fwd, bwd], axis=1)
 
 ''' simple sonnet wrapper for reshaping'''
@@ -813,63 +813,63 @@ class Model(snt.AbstractModule):
     def attn_N(self):
         return self.agg_module.N
     
-#---------------------------------------------------------------------------------
-''' EXPERIMENTAL.....'''
-#---------------------------------------------------------------------------------
-class RHN_Cell(snt.RNNCore):
-    def __init__(self, output_size,
-                 num_layers=5, 
-                 use_inputs_on_each_layer=False,
-                 use_kronecker_reparameterization=False,
-                 initializers=None,
-                 name="rhn_cell"):
-        super(RHN_Cell, self).__init__(name=name)
-        self._output_size = output_size
-        self._num_layers=num_layers
-        self._use_inputs_on_each_layer=use_inputs_on_each_layer
-        self._use_kronecker_reparameterization=use_kronecker_reparameterization
-    
-    @classmethod
-    def get_possible_initializer_keys():
-        return None
-    
-    @property
-    def output_size(self):
-        """Returns a description of the output size, without batch dimension."""
-        return tf.TensorShape([self._output_size])
-        
-    def _build(self, inputs, state):
-        cell = rnn_cell_modern.HighwayRNNCell(self._output_size, 
-                                              num_highway_layers=self._num_layers,
-                                              use_inputs_on_each_layer=self._use_inputs_on_each_layer,
-                                              use_kronecker_reparameterization=self._use_kronecker_reparameterization)
-#         cell = RHNCell(num_units=self._output_size,
-#                        in_size=self._in_size,
-#                        is_training=True,
-#                        depth=self._num_layers)
-        return cell(inputs, state)
+##################################################################################################
+##################################################################################################
+##### EXPERIMENTAL ###############################################################################
+# class RHN_Cell(snt.RNNCore):
+#     def __init__(self, output_size,
+#                  num_layers=5, 
+#                  use_inputs_on_each_layer=False,
+#                  use_kronecker_reparameterization=False,
+#                  initializers=None,
+#                  name="rhn_cell"):
+#         super(RHN_Cell, self).__init__(name=name)
+#         self._output_size = output_size
+#         self._num_layers=num_layers
+#         self._use_inputs_on_each_layer=use_inputs_on_each_layer
+#         self._use_kronecker_reparameterization=use_kronecker_reparameterization
+#     
+#     @classmethod
+#     def get_possible_initializer_keys():
+#         return None
+#     
+#     @property
+#     def output_size(self):
+#         """Returns a description of the output size, without batch dimension."""
+#         return tf.TensorShape([self._output_size])
+#         
+#     def _build(self, inputs, state):
+#         cell = rnn_cell_modern.HighwayRNNCell(self._output_size, 
+#                                               num_highway_layers=self._num_layers,
+#                                               use_inputs_on_each_layer=self._use_inputs_on_each_layer,
+#                                               use_kronecker_reparameterization=self._use_kronecker_reparameterization)
+# #         cell = RHNCell(num_units=self._output_size,
+# #                        in_size=self._in_size,
+# #                        is_training=True,
+# #                        depth=self._num_layers)
+#         return cell(inputs, state)
 
-class RWA_Cell(snt.RNNCore):
-    def __init__(self, num_units,
-                 name="rwa_cell"):
-        super(RWA_Cell, self).__init__(name=name)
-        self._num_units = num_units
-    
-    @classmethod
-    def get_possible_initializer_keys():
-        return None
-    
-    @property
-    def output_size(self):
-        return self._num_units
-
-    @property
-    def state_size(self):
-        return (self._num_units, self._num_units, self._num_units, self._num_units)
-        
-    def _build(self, inputs, state):
-        cell = RWACell(self._num_units)
-        return cell(inputs, state)
+# class RWA_Cell(snt.RNNCore):
+#     def __init__(self, num_units,
+#                  name="rwa_cell"):
+#         super(RWA_Cell, self).__init__(name=name)
+#         self._num_units = num_units
+#     
+#     @classmethod
+#     def get_possible_initializer_keys():
+#         return None
+#     
+#     @property
+#     def output_size(self):
+#         return self._num_units
+# 
+#     @property
+#     def state_size(self):
+#         return (self._num_units, self._num_units, self._num_units, self._num_units)
+#         
+#     def _build(self, inputs, state):
+#         cell = RWACell(self._num_units)
+#         return cell(inputs, state)
 
 ##################################################################################################
 ##################################################################################################

@@ -136,6 +136,45 @@ class Model(object):
   def nvars(self):
     return self._nvars
 
+class RHNCell2(RNNCell):
+  def __init__(self, num_units, depth=3, forget_bias=None):#in_size, is_training
+    self._num_units = num_units
+    self.depth = depth
+    self.forget_bias = forget_bias
+    #self._in_size = in_size
+    #self.is_training = is_training
+
+  @property
+  def input_size(self):
+    #return self._in_size
+    return self._num_units
+
+  @property
+  def output_size(self):
+    return self._num_units
+
+  @property
+  def state_size(self):
+    return self._num_units
+
+  def __call__(self, inputs, state, scope=None):
+    current_state = state[0]
+    noise_i = state[1]
+    noise_h = state[2]
+    for i in range(self.depth):
+      with tf.variable_scope('h_'+str(i)):
+        if i == 0:
+          h = tf.tanh(linear([inputs * noise_i, current_state * noise_h], self._num_units, True))
+        else:
+          h = tf.tanh(linear([current_state * noise_h], self._num_units, True))
+      with tf.variable_scope('t_'+str(i)):
+        if i == 0:
+          t = tf.sigmoid(linear([inputs * noise_i, current_state * noise_h], self._num_units, True, self.forget_bias))
+        else:
+          t = tf.sigmoid(linear([current_state * noise_h], self._num_units, True, self.forget_bias))
+      current_state = (h - current_state)* t + current_state
+
+    return current_state, [current_state, noise_i, noise_h]
 
 class RHNCell(RNNCell):
   """Variational Recurrent Highway Layer
