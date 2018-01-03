@@ -432,7 +432,10 @@ def pad_sequences(sequences, trim_words=False, max_text_length=None, max_word_le
                 x[i,:len(s)] = s
             else:
                 x[i,-len(s):] = s
-                
+    
+    if d<3 and wpad!='post':
+        seq_lengths = [max_text_length for i in seq_lengths]
+        
     return x, seq_lengths
 
             
@@ -452,7 +455,7 @@ class EssayBatcher(object):
             print('max essay length: {}'.format(self.max_text_length))
         if trim_chars:
             self.max_word_length = None
-        if ystats is None:
+        if ystats is None and reader!=None:
             ystats = reader.get_ystats()# for ATS: reader=field_parser
             print('\nYSTATS (mean,std,min,max,#): {}\n'.format(ystats))
         self.ystats = ystats
@@ -474,7 +477,7 @@ class EssayBatcher(object):
             self._word_count = 0
         return wc
     
-    def batch(self, ids=None, labels=None, words=None, chars=None, w=None, c=None, trim_words=None):
+    def batch(self, ids=None, labels=None, words=None, chars=None, w=None, c=None, trim_words=None, wpad='post'):
         if ids:
             self.last = (ids, labels, words, chars, w, c)
         else:
@@ -503,12 +506,12 @@ class EssayBatcher(object):
         b['y'] = y                                  # <-- THIS key ('y') SHOULD COME FROM FIELD_PARSER.fields
         
         if w and not isListEmpty(words):
-            word_tensor, seq_lengths = pad_sequences(words, trim_words=trim_words, max_text_length=self.max_text_length)
+            word_tensor, seq_lengths = pad_sequences(words, trim_words=trim_words, max_text_length=self.max_text_length, wpad=wpad)
             b['w'] = word_tensor
             b['x'] = b['w']
         
         if c and not isListEmpty(chars):
-            char_tensor, seq_lengths = pad_sequences(chars, trim_words=trim_words, max_text_length=self.max_text_length, max_word_length=self.max_word_length)
+            char_tensor, seq_lengths = pad_sequences(chars, trim_words=trim_words, max_text_length=self.max_text_length, max_word_length=self.max_word_length, wpad=wpad)
             b['c'] = char_tensor
             b['x'] = b['c']
         
@@ -524,7 +527,7 @@ class EssayBatcher(object):
     use batch padding!
     https://r2rt.com/recurrent-neural-networks-in-tensorflow-iii-variable-length-sequences.html
     '''
-    def batch_stream(self, stop=False, skip_ids=None, w=True, c=True, min_cut=1.0, partial=False, trim_words=None):
+    def batch_stream(self, stop=False, skip_ids=None, w=True, c=True, min_cut=1.0, partial=False, trim_words=None, wpad='post'):
         t=None
         if min_cut<1.0:
             t = sample_dict(self.ystats.v, self.ystats.c, min_cut=min_cut)
@@ -546,6 +549,54 @@ class EssayBatcher(object):
         
         if i>0 and partial:
             yield self.batch(ids, labels, words, chars, w, c, trim_words)
+            
+            
+    def batch_stream2(self, x, y, w=True, c=False, partial=True, trim_words=None):
+        labels, words, j = [],[],0
+        self._word_count = 0
+        for i in range(len(y)):
+            j+=1
+            labels.append(y[i])
+            words.append(x[i,:])
+            if j == self.batch_size:
+                yield self.batch2(labels, words)
+                labels, words, j = [],[],0
+        
+        if j>0 and partial:
+            yield self.batch2(labels, words)
+
+    def batch2(self, labels=None, words=None, trim_words=None):
+        n = len(labels)
+        b = { 'n' : n }
+        
+        # shuffle
+        p = np.random.permutation(n)
+        q = [i+n for i in range(self.batch_size-n)]
+        p = np.hstack([p,q]).astype(np.int32)
+        
+        # if not full batch.....just copy first item to fill
+        for i in range(self.batch_size-n):
+            labels.append(labels[0])
+            words.append(words[0])
+           
+        y = np.array(labels, dtype=np.float32)
+        y = y[p]
+        #y = self.normalize(y)
+        y = y[...,None]#y = np.expand_dims(y, 1)
+        b['y'] = y                                  # <-- THIS key ('y') SHOULD COME FROM FIELD_PARSER.fields
+        
+        #word_tensor, seq_lengths = pad_sequences(words, trim_words=trim_words, max_text_length=self.max_text_length)
+        word_tensor = np.array(words, dtype=np.float32)
+        word_tensor = word_tensor[p]
+        b['w'] = word_tensor
+        b['x'] = b['w']
+        
+        
+        max_seq_length = word_tensor.shape[1]
+        seq_lengths = [max_seq_length for x in labels]    
+        b['s'] = seq_lengths
+        
+        return adict(b)
 
 def test_text_reader():
     data_dir = '/home/david/data/ets1b/2016'

@@ -16,8 +16,8 @@ from nlp.util.utils import ps
 from nlp.tf_tools.attn1 import Attn1
 from nlp.tf_tools.attn2 import Attn2
 
-# from nlp.rwa.RWACell import RWACell
-from nlp.rwa.rwa_cell import RWACell
+from nlp.rwa.RWACell import RWACell
+# from nlp.rwa.rwa_cell import RWACell
 
 from nlp.rwa.rda_cell import RDACell
 
@@ -310,6 +310,13 @@ def get_final_state(final_state, unit=None):
             return final_state[1]
         elif unit=='lstm':
             return final_state.c
+        elif unit=='rda':
+            return final_state.h
+        elif unit.startswith('rwa'):
+            try:
+                return final_state.h
+            except AttributeError:
+                return final_state[2]
         else:
             return final_state
         
