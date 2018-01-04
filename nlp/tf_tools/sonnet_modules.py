@@ -285,9 +285,14 @@ def get_initial_state(cell, args):
 #             return r2rt.get_initial_cell_state(cell, initializer, args.batch_size, tf.float32)
     return cell.zero_state(args.batch_size, tf.float32)
 
-def create_rnn_cell(args):
+def create_rnn_cell(args, scope=None):
     rnn, kwargs = rnn_unit(args)
-    cell = rnn(args.rnn_size, **kwargs)
+    
+    if scope!=None:
+        with tf.variable_scope(scope):
+            cell = rnn(args.rnn_size, **kwargs)
+    else:
+        cell = rnn(args.rnn_size, **kwargs)
     
     initial_state = get_initial_state(cell, args)
     
@@ -350,7 +355,7 @@ class DeepRNN(snt.AbstractModule):
 
     def _build(self, inputs):
         if self.num_layers > 1:
-            cells = [create_rnn_cell(self) for _ in range(self.num_layers)]
+            cells = [create_rnn_cell(self, scope='layer{}'.format(i)) for i in range(self.num_layers)]
             cells, states = zip(*cells)
             cell = tf.contrib.rnn.MultiRNNCell(cells, state_is_tuple=True)
             self._initial_rnn_state = tuple(states)
@@ -360,10 +365,14 @@ class DeepRNN(snt.AbstractModule):
         if self.dropout<0:
             cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=self._keep_prob)
         
+        sequence_length=None
+        if self.FLAGS.wpad=='post':
+            sequence_length=self._seq_len
+        
         output, self._final_rnn_state = tf.nn.dynamic_rnn(cell,
                                                           inputs,
                                                           dtype=tf.float32,
-                                                          sequence_length=self._seq_len,
+                                                          sequence_length=sequence_length,
                                                           initial_state=self._initial_rnn_state
                                                           )
         
@@ -387,7 +396,6 @@ class DeepRNN(snt.AbstractModule):
     @property
     def final_rnn_state(self):
         self._ensure_is_connected()
-        
         if self.num_layers > 1:
             return collapse_final_state_layers(self._final_rnn_state, self.unit)
         else:
@@ -430,8 +438,10 @@ class DeepBiRNN(snt.AbstractModule):
                 self._seq_len = tf.placeholder(tf.int32, [self.batch_size])
 
     def _build(self, inputs):
-        cells_fw = [create_rnn_cell(self) for i in range(self.num_layers)]
-        cells_bw = [create_rnn_cell(self) for i in range(self.num_layers)]
+        with tf.variable_scope('fwd'):
+            cells_fw = [create_rnn_cell(self, scope='layer{}'.format(i)) for i in range(self.num_layers)]
+        with tf.variable_scope('bwd'):
+            cells_bw = [create_rnn_cell(self, scope='layer{}'.format(i)) for i in range(self.num_layers)]
         
         cells_fw, initial_states_fw = zip(*cells_fw)
         cells_bw, initial_states_bw = zip(*cells_bw)
@@ -440,11 +450,15 @@ class DeepBiRNN(snt.AbstractModule):
         cells_bw = list(cells_bw)
         initial_states_fw = list(initial_states_fw)
         initial_states_bw = list(initial_states_bw)
-         
+        
+        sequence_length=None
+        if self.FLAGS.wpad=='post':
+            sequence_length=self._seq_len
+            
         outputs, self.output_state_fw, self.output_state_bw = tf.contrib.rnn.stack_bidirectional_dynamic_rnn(cells_fw, cells_bw, inputs,
                                                                                                              initial_states_fw=initial_states_fw,
                                                                                                              initial_states_bw=initial_states_bw,
-                                                                                                             sequence_length=self._seq_len,
+                                                                                                             sequence_length=sequence_length,
                                                                                                              dtype=tf.float32)
         return outputs
     
@@ -660,8 +674,8 @@ class Aggregation(snt.AbstractModule):
 #             output = tf.reduce_mean(inputs, axis=1)
             
         else: ## otherwise just use final rnn state
-            #output = tf.gather_nd(inputs, tf.stack([tf.range(self.FLAGS.batch_size), self.seq_len-1], axis=1))
             output = self.final_rnn_state
+#             output = tf.gather_nd(inputs, tf.stack([tf.range(self.FLAGS.batch_size), self.seq_len-1], axis=1))
         
         tf.summary.histogram('{}_output'.format(self.name), output)
         

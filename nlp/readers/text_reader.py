@@ -36,12 +36,13 @@ READ FILE IN CHUNKS
 - shuffles each chunk
 '''
 class ChunkReader(object):
-    def __init__(self, file_name, chunk_size=1000, shuf=True, regex=None, seed=None):
+    def __init__(self, file_name, chunk_size=1000, shuf=True, regex=None, seed=None, bucket=None):
         self.file_name = file_name
         self.chunk_size = chunk_size
         if chunk_size==None or chunk_size<=0: # read entire file as one chunk
             self.chunk_size=np.iinfo(np.int32).max
         self.shuf = shuf
+        self.bucket = bucket
         self.regex = regex
         if regex:
             self.regex = re.compile(regex)
@@ -58,10 +59,21 @@ class ChunkReader(object):
                 lines.append(next(file_stream).strip())
         except StopIteration:
             self.eof = True
+            
         if self.regex:
             lines = filter(self.regex.search, lines)
-        if self.shuf:
+            
+        if self.bucket!=None:
+            lens = [len(line) for line in lines]
+            m = float(max(lens))
+            lens = [float(ell)/m for ell in lens]
+            lens = [ell + self.bucket * self.rng.rand() for ell in lens]
+            pp = np.argsort(lens)
+            lines = [lines[p] for p in pp]
+            
+        elif self.shuf:
             self.rng.shuffle(lines)
+            
         return lines
         
     def chunk_stream(self, stop=True):
@@ -87,12 +99,13 @@ class ChunkReader(object):
                 print('{} | {}'.format(i,line))
 
 class GlobReader(object):
-    def __init__(self, file_pattern, chunk_size=1000, shuf=True, regex=None, seed=None):
+    def __init__(self, file_pattern, chunk_size=1000, shuf=True, regex=None, seed=None, bucket=None):
         self.file_pattern = file_pattern
         self.file_names = glob.glob(self.file_pattern)
         self.file_names.sort()
         self.chunk_size = chunk_size
         self.shuf = shuf
+        self.bucket = bucket
         self.regex = regex
         if seed==None or seed<=0:
             self.seed = get_seed()
@@ -123,7 +136,8 @@ class GlobReader(object):
                 self.cur_file = file
                 chunk_reader =  ChunkReader(file, 
                                             chunk_size=self.chunk_size, 
-                                            shuf=self.shuf, 
+                                            shuf=self.shuf,
+                                            bucket=self.bucket,
                                             regex=self.regex, 
                                             seed=self.seed)
                 for chunk in chunk_reader.chunk_stream(stop=True):
@@ -415,12 +429,10 @@ def pad_sequences(sequences, trim_words=False, max_text_length=None, max_word_le
     for i,s in enumerate(sequences):
         if d > 2:# <-- indicates char sequence
             y = (np.ones((max_text_length,) + sample_shape) * value).astype(dtype)
+            k = (0 if wpad=='post' else max_text_length-len(s))
             for j,t in enumerate(s):
                 if j>= max_text_length:
                     break
-                k=0
-                if wpad == 'pre':
-                    k = max_text_length-len(s)
                 if cpad == 'post':
                     y[j+k,:len(t)] = t
                 else:
@@ -461,8 +473,12 @@ class EssayBatcher(object):
         self.ystats = ystats
     
     ## to interval [0,1]
-    def normalize(self, y):
-        y = (y - self.ystats.min) / (self.ystats.max-self.ystats.min)# --> [0,1]
+    def normalize(self, y, min=None, max=None):
+        if min==None:
+            min = self.ystats.min
+        if max==None:
+            max = self.ystats.max
+        y = (y-min) / (max-min)# --> [0,1]
         #y = y - (self.ystats.mean-self.ystats.min)/(self.ystats.max-self.ystats.min)
         return y
         #return (y - self.ystats.mean) / (self.ystats.max-self.ystats.min)
@@ -544,11 +560,11 @@ class EssayBatcher(object):
             chars.append(d.c)
             i=i+1
             if i == self.batch_size:
-                yield self.batch(ids, labels, words, chars, w, c, trim_words)
+                yield self.batch(ids, labels, words, chars, w, c, trim_words, wpad=wpad)
                 i, ids, labels, words, chars = 0,[],[],[],[]
         
         if i>0 and partial:
-            yield self.batch(ids, labels, words, chars, w, c, trim_words)
+            yield self.batch(ids, labels, words, chars, w, c, trim_words, wpad=wpad)
             
             
     def batch_stream2(self, x, y, w=True, c=False, partial=True, trim_words=None):
@@ -578,25 +594,60 @@ class EssayBatcher(object):
         for i in range(self.batch_size-n):
             labels.append(labels[0])
             words.append(words[0])
-           
+        
+        ############################################################
         y = np.array(labels, dtype=np.float32)
         y = y[p]
         #y = self.normalize(y)
         y = y[...,None]#y = np.expand_dims(y, 1)
         b['y'] = y                                  # <-- THIS key ('y') SHOULD COME FROM FIELD_PARSER.fields
         
+        ############################################################
         #word_tensor, seq_lengths = pad_sequences(words, trim_words=trim_words, max_text_length=self.max_text_length)
         word_tensor = np.array(words, dtype=np.float32)
         word_tensor = word_tensor[p]
+        ####################
+        nz = first_nonzero(word_tensor)
+        mz = min(nz)
+        #mz = max(0,mz-50)
+        
+        ##1
+        word_tensor = word_tensor[:,mz:]
+        
+#         ##2
+#         m = word_tensor.shape[1]
+#         seq_lengths = [m-z for z in nz]
+#         max_text_length = m-mz
+#         x = np.zeros((self.batch_size, max_text_length)).astype(np.float32)
+#         for i in range(self.batch_size):
+#             s = word_tensor[i,nz[i]:]
+#             x[i,:len(s)] = s
+#         word_tensor = x
+        
+#         ##3
+#         word_tensor = np.fliplr(word_tensor); seq_lengths = [m-z for z in nz]
+        
+        ####################
         b['w'] = word_tensor
         b['x'] = b['w']
         
-        
+        ############################################################
         max_seq_length = word_tensor.shape[1]
-        seq_lengths = [max_seq_length for x in labels]    
+        seq_lengths = [max_seq_length for x in labels]
+        
         b['s'] = seq_lengths
         
         return adict(b)
+
+def first_nonzero(a):
+    di=[]
+    for i in range(len(a)):
+        idx=np.where(a[i]!=0)
+        try:
+            di.append(idx[0][0])
+        except IndexError:
+            di.append(len(a[i]))
+    return di
 
 def test_text_reader():
     data_dir = '/home/david/data/ets1b/2016'

@@ -123,7 +123,7 @@ def isnum(a):
 def get_seed():
     t = int( time.time() * 1000.0 )
     seed = ((t & 0xff000000) >> 24) + ((t & 0x00ff0000) >>  8) + ((t & 0x0000ff00) <<  8) + ((t & 0x000000ff) << 24)
-    return seed
+    return seed % 2**30-1#    2**32-1
 
 rng = 0
 def seed_random(seed=None):
