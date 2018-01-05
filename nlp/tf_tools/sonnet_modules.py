@@ -291,10 +291,10 @@ def create_rnn_cell(args, scope=None):
     if scope!=None:
         with tf.variable_scope(scope):
             cell = rnn(args.rnn_size, **kwargs)
+            initial_state = get_initial_state(cell, args)
     else:
         cell = rnn(args.rnn_size, **kwargs)
-    
-    initial_state = get_initial_state(cell, args)
+        initial_state = get_initial_state(cell, args)
     
     #cell = tf.contrib.rnn.ResidualWrapper(cell)
     #cell = tf.contrib.rnn.HighwayWrapper(cell)
