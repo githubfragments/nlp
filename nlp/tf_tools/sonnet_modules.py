@@ -334,6 +334,7 @@ class DeepRNN(snt.AbstractModule):
     def __init__(self, 
                  FLAGS=None,
                  seq_len=None,
+                 keep_prob=None,
                  forget_bias=0.,
                  name="deep_rnn"):
         super(DeepRNN, self).__init__(name=name)
@@ -345,11 +346,13 @@ class DeepRNN(snt.AbstractModule):
         self.train_initial_state = FLAGS.train_initial_state
         self.unit = FLAGS.rnn_unit
         self._seq_len = seq_len
+        self._keep_prob = keep_prob
         self.forget_bias = forget_bias
         self.name = name
         
         with self._enter_variable_scope():
-            self._keep_prob = tf.placeholder_with_default(1.0-abs(self.dropout), shape=())
+            if keep_prob is None:
+                self._keep_prob = tf.placeholder_with_default(1.0-abs(self.dropout), shape=())
             if seq_len is None:
                 self._seq_len = tf.placeholder(tf.int32, [self.batch_size])
 
@@ -403,6 +406,12 @@ class DeepRNN(snt.AbstractModule):
 
 ###############################################################################
 
+def padded_reverse(x, seq_len, batch_dim=0, seq_dim=1):
+    x = tf.reverse(x,[seq_dim])
+    x = tf.reverse_sequence(x, seq_len, batch_dim=batch_dim, seq_dim=seq_dim)
+    x = tf.reverse(x,[seq_dim])
+    return x
+
 class DeepBiRNN(snt.AbstractModule):
     def __init__(self,
                  FLAGS=None,
@@ -410,16 +419,62 @@ class DeepBiRNN(snt.AbstractModule):
                  forget_bias=0.,
                  name="deep_bi_rnn"):
         super(DeepBiRNN, self).__init__(name=name)
-#         self.rnn_size = rnn_size
-#         self.num_layers = num_layers
-#         self.batch_size = batch_size
-#         self.dropout = abs(dropout)
-#         self.forget_bias = forget_bias
-#         self._seq_len = seq_len
-#         self.train_initial_state = train_initial_state
-#         self.rhn_highway_layers = rhn_highway_layers
-#         self.unit = unit
-#         self.name = name
+        self.FLAGS = FLAGS
+        self.rnn_size = FLAGS.rnn_dim
+        self.num_layers = FLAGS.rnn_layers
+        self.batch_size = FLAGS.batch_size
+        self.dropout = FLAGS.dropout
+        self.train_initial_state = FLAGS.train_initial_state
+        self.unit = FLAGS.rnn_unit
+        self._seq_len = seq_len
+        self.forget_bias = forget_bias
+        self.name = name
+        
+        
+        with self._enter_variable_scope():
+            self._keep_prob = tf.placeholder_with_default(1.0, shape=())
+            if seq_len is None:
+                self._seq_len = tf.placeholder(tf.int32, [self.batch_size])
+
+    def _build(self, inputs):
+        with tf.variable_scope('fwd'):
+            self.fwd_rnn = DeepRNN(FLAGS=self.FLAGS, keep_prob=self._keep_prob)
+        with tf.variable_scope('bwd'):
+            self.bwd_rnn = DeepRNN(FLAGS=self.FLAGS, keep_prob=self._keep_prob)
+            
+        fwd_outputs = self.fwd_rnn(inputs)
+        bwd_outputs = self.bwd_rnn(padded_reverse(inputs, self._seq_len))
+        
+        outputs = tf.concat([fwd_outputs, bwd_outputs], axis=1)
+        
+        return outputs
+    
+    @property
+    def seq_len(self):
+        return self._seq_len
+    
+    @property
+    def keep_prob(self):
+        return self._keep_prob
+    
+    @property
+    def final_rnn_state(self):
+        self._ensure_is_connected()
+#         fwd = collapse_final_state_layers(self.output_state_fw, self.unit)
+#         bwd = collapse_final_state_layers(self.output_state_bw, self.unit)
+        fwd = self.fwd_rnn.final_rnn_state
+        bwd = self.bwd_rnn.final_rnn_state
+        return tf.concat([fwd, bwd], axis=1)
+    
+###############################################################################
+    
+class DeepBiRNN_v1(snt.AbstractModule):
+    def __init__(self,
+                 FLAGS=None,
+                 seq_len=None,
+                 forget_bias=0.,
+                 name="deep_bi_rnn"):
+        super(DeepBiRNN, self).__init__(name=name)
         self.FLAGS = FLAGS
         self.rnn_size = FLAGS.rnn_dim
         self.num_layers = FLAGS.rnn_layers

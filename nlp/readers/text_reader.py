@@ -445,8 +445,8 @@ def pad_sequences(sequences, trim_words=False, max_text_length=None, max_word_le
             else:
                 x[i,-len(s):] = s
     
-    if d<3 and wpad!='post':
-        seq_lengths = [max_text_length for i in seq_lengths]
+#     if d<3 and wpad!='post':
+#         seq_lengths = [max_text_length for i in seq_lengths]
         
     return x, seq_lengths
 
@@ -531,11 +531,7 @@ class EssayBatcher(object):
             b['c'] = char_tensor
             b['x'] = b['c']
         
-        b['s'] = seq_lengths
-        # EVEN 'w' & 'c' SHOULD COME FROM FIELD PARSER.TEXT_PARSER.fields
-        ## just TESTING!!!!!#dsvtest
-        #max_seq_length = max(seq_lengths)
-        #seq_lengths = [max_seq_length for x in seq_lengths]    
+        b['s'] = seq_lengths    
         
         return adict(b)
     
@@ -543,7 +539,7 @@ class EssayBatcher(object):
     use batch padding!
     https://r2rt.com/recurrent-neural-networks-in-tensorflow-iii-variable-length-sequences.html
     '''
-    def batch_stream(self, stop=False, skip_ids=None, w=True, c=True, min_cut=1.0, partial=False, trim_words=None, wpad='post'):
+    def batch_stream(self, stop=False, skip_ids=None, hit_ids=None, w=True, c=True, min_cut=1.0, partial=False, trim_words=None, wpad='post'):
         t=None
         if min_cut<1.0:
             t = sample_dict(self.ystats.v, self.ystats.c, min_cut=min_cut)
@@ -553,6 +549,9 @@ class EssayBatcher(object):
         for d in self.reader.line_stream(stop=stop, t=t):# reader=FieldParser!
             if skip_ids:
                 if d.id in skip_ids:
+                    continue
+            if hit_ids:
+                if d.id not in hit_ids:
                     continue
             ids.append(d.id)
             labels.append(d.y)
