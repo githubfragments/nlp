@@ -3,6 +3,7 @@ from __future__ import print_function
 import os
 import codecs
 import numpy as np
+import re
 from future_builtins import map  # Only on Python 2
 from collections import Counter
 from itertools import chain
@@ -34,6 +35,14 @@ def strip_non_ascii(string):
     stripped = (c for c in string if 0 < ord(c) < 127)
     return str(''.join(stripped))
 
+def clean_tags(raw_html):
+    cleanr = re.compile('<.*?>')
+    cleantext = re.sub(cleanr, '', raw_html)
+    return cleantext
+
+def corr(s):
+    return re.sub(r'\.(?! )', ' . ', re.sub(r' +', ' ', s))
+  
 def load_word_list(file):
     has_header = check_header(file)
     words = []
@@ -67,6 +76,14 @@ class Vocab:
     def __init__(self, token2index=None, index2token=None):
         self._token2index = token2index or {}
         self._index2token = index2token or []
+        self.reset_counts()
+        
+    def reset_counts(self):
+        self._unk = 0
+        self._tot = 0
+        
+    def unk2tot(self):
+        return float(self._unk)/float(self._tot)
 
     def feed(self, token):
         if token not in self._token2index:
@@ -92,7 +109,11 @@ class Vocab:
 
     ''' returns index 0 for unknown tokens! '''
     def get(self, token, default=0):
-        return self._token2index.get(token, default)
+        idx = self._token2index.get(token, default)
+        self._tot += 1
+        self._unk += (0 if idx else 1)
+        return idx
+    
     def get_index(self, token):
         return self.get(token)
 
@@ -123,13 +144,23 @@ class Vocab:
         return char_array
     
     @staticmethod
-    def clean(word, max_word_length=None, eos='+'):
+    def clean(word, max_word_length=None, eos='+', lower=False):
         word = word.strip().replace('}', '').replace('{', '').replace('|', '')
+        if lower:
+            word = word.lower()
         if eos:
             word = word.replace(eos, '')
         if max_word_length and len(word) > max_word_length - 2:  # space for 'start' and 'end' chars
             word = word[:max_word_length-2]
         return word
+    
+    @staticmethod
+    def clean_line(line):
+        #line = clean_tags(line)
+        #line = corr(line)
+        # LOOKUP ets_reader.py 'is_number' for number processing!!!
+        return corr(clean_tags(line))
+        
 
     @staticmethod
     def load_vocab(vocab_file, max_word_length=60, eos='+'):
@@ -172,7 +203,8 @@ class Vocab:
 
     @staticmethod
     def load_word_embeddings(emb_file, data_file, min_freq=1, unk='<unk>'):
-        words = set(word_counts(data_file, min_freq))
+        wc = word_counts(data_file, min_freq)
+        words = set(wc)
         words.discard(unk)
         word2emb = load_embeddings(emb_file, filter_words=words)
         #words = list(word2emb)

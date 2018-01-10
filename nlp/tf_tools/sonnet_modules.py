@@ -252,8 +252,20 @@ def rnn_unit(args):
     elif args.unit=='ran_ln':
         rnn = RANCell
         kwargs = { 'normalize':True }
+    
     elif args.unit=='rwa':
         rnn = RWACell
+        
+#         decay_rate = [0.0]*args.rnn_size
+#         #decay_rate = [0.693/10]*150 + [0.0]*150
+#         #decay_rate = [0.693]*75 + [0.693/10]*75 + [0.693/100]*75 + [0.0]*75
+#         decay_rate = tf.Variable(tf.constant(decay_rate, dtype=tf.float32), trainable=True, name='decay_rate')
+#         
+#         #std = 0.001
+#         #decay_rate = tf.get_variable('decay_rate', shape=[args.rnn_size], initializer=tf.truncated_normal_initializer(mean=2*std,stddev=std))
+#         
+#         kwargs = { 'decay_rate':decay_rate }
+        
     elif args.unit=='rwa_bn':
         rnn = RWACell
         kwargs = { 'normalize':True }
@@ -544,7 +556,7 @@ class Reshape(snt.AbstractModule):
     
     def _build(self, inputs):
         dim = inputs.get_shape().as_list()[1]
-        return tf.reshape(inputs, [self.batch_size, self.num_unroll_steps, dim])    
+        return tf.reshape(inputs, [self.batch_size, self.num_unroll_steps, dim])
 
 def softmask(x, axis=-1, mask=None):
     x_max = tf.reduce_max(x, axis=axis, keep_dims=True)
@@ -630,8 +642,6 @@ class Attention(snt.AbstractModule):
         ## Linear 2
         lin_module = snt.Linear(output_size=A, initializers={'w':w_init, 'b':b_init})
         z = lin_module(inputs)
-        
-        
         v = tf.tanh(z)
         
         #####

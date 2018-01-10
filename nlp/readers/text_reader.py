@@ -176,10 +176,11 @@ class TextParser(object):
     
     ''' parses line into word/char tokens, based on vocab(s) '''
     def _parse_line(self, line, word_tokens, char_tokens):
+        line = Vocab.clean_line(line)
         toks = self.tokenize(line)
         
         for word in toks:
-            word = Vocab.clean(word, self.max_word_length)
+            word = Vocab.clean(word, self.max_word_length, lower=(self.char_vocab==None))
             
             if self.word_vocab:
                 word_idx = self.word_vocab.get(word)
@@ -685,8 +686,11 @@ def test_essay_batcher_2():
     emb_file = os.path.join(emb_dir, 'glove.6B.100d.txt')
     U.seed_random(1234)
     
-    data_dir = '/home/david/data/ets1b/2016'
-    id = 63986; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
+#     data_dir = '/home/david/data/ets1b/2016'
+#     id = 63986; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
+    
+    data_dir = '/home/david/data/ats/ets'
+    id = 55433; essay_file = os.path.join(data_dir, '{0}', 'text.txt').format(id)
     
     reader =  GlobReader(essay_file, chunk_size=1000, regex=REGEX_NUM, shuf=True)
     
@@ -756,8 +760,8 @@ def test_essay_parser():
     emb_dir = '/home/david/data/embed'
     emb_file = os.path.join(emb_dir, 'glove.6B.100d.txt')
     
-    data_dir = '/home/david/data/ets1b/2016'
-    id = 63986; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
+#     data_dir = '/home/david/data/ets1b/2016'
+#     id = 63986; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
     
     data_dir = '/home/david/data/ats/ets'
     id = 55433; essay_file = os.path.join(data_dir, '{0}', 'text.txt').format(id)
@@ -777,10 +781,10 @@ def test_essay_parser():
                
 if __name__ == '__main__':
     #test_essay_reader()
-    test_essay_parser()
+#     test_essay_parser()
 #     test_ystats()
 #     test_text_reader()
 #     test_text_batcher()
 #     test_essay_batcher_1()
-#     test_essay_batcher_2()
+    test_essay_batcher_2()
     print('done')
