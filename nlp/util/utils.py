@@ -52,7 +52,20 @@ def softmask(x, axis=-1, mask=None):
         
     es = tf.reduce_sum(ex, axis=axis, keep_dims=True)
     return ex/es
-    
+
+def shuffle_lists(*ls):
+    l =list(zip(*ls))
+    random.shuffle(l, random=rng)
+    return zip(*l)
+
+def shuffle_arrays(*xx):
+    n = xx[0].shape[0]
+    p = rng.permutation(n)#p = np.random.permutation(n)
+    yy=()
+    for x in xx:
+        yy += (x[p],)
+    return yy
+
 def memoize(f):
     """ Memoization decorator for a function taking one or more arguments. """
     class memodict(dict):

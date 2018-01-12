@@ -428,6 +428,7 @@ class DeepBiRNN(snt.AbstractModule):
     def __init__(self,
                  FLAGS=None,
                  seq_len=None,
+                 keep_prob=None,
                  forget_bias=0.,
                  name="deep_bi_rnn"):
         super(DeepBiRNN, self).__init__(name=name)
@@ -444,7 +445,8 @@ class DeepBiRNN(snt.AbstractModule):
         
         
         with self._enter_variable_scope():
-            self._keep_prob = tf.placeholder_with_default(1.0, shape=())
+            if keep_prob is None:
+                self._keep_prob = tf.placeholder_with_default(1.0, shape=())
             if seq_len is None:
                 self._seq_len = tf.placeholder(tf.int32, [self.batch_size])
 
@@ -484,9 +486,10 @@ class DeepBiRNN_v1(snt.AbstractModule):
     def __init__(self,
                  FLAGS=None,
                  seq_len=None,
+                 keep_prob=None,
                  forget_bias=0.,
-                 name="deep_bi_rnn"):
-        super(DeepBiRNN, self).__init__(name=name)
+                 name="deep_bi_rnn_v1"):
+        super(DeepBiRNN_v1, self).__init__(name=name)
         self.FLAGS = FLAGS
         self.rnn_size = FLAGS.rnn_dim
         self.num_layers = FLAGS.rnn_layers
@@ -500,7 +503,8 @@ class DeepBiRNN_v1(snt.AbstractModule):
         
         
         with self._enter_variable_scope():
-            self._keep_prob = tf.placeholder_with_default(1.0, shape=())
+            if keep_prob is None:
+                self._keep_prob = tf.placeholder_with_default(1.0, shape=())
             if seq_len is None:
                 self._seq_len = tf.placeholder(tf.int32, [self.batch_size])
 
@@ -834,6 +838,8 @@ class Model(snt.AbstractModule):
         RNN = DeepRNN
         if self.FLAGS.bidirectional:
             RNN = DeepBiRNN
+            if self.FLAGS.wpad=='post':
+                RNN = DeepBiRNN_v1
             
         self._rnn_module = RNN(FLAGS=self.FLAGS)
         outputs = self._rnn_module(outputs)
@@ -846,8 +852,6 @@ class Model(snt.AbstractModule):
         outputs = self._agg_module(outputs)
         
         ##################################################
-
-#         ## linear
 #         dim = self.FLAGS.rnn_dim
 #         #dim = tf.shape(outputs)[-1]
 #         #dim = outputs.get_shape().as_list()[-1]

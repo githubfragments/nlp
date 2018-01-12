@@ -36,13 +36,14 @@ READ FILE IN CHUNKS
 - shuffles each chunk
 '''
 class ChunkReader(object):
-    def __init__(self, file_name, chunk_size=1000, shuf=True, regex=None, seed=None, bucket=None):
+    def __init__(self, file_name, chunk_size=1000, shuf=True, regex=None, seed=None, bucket=None, verbose=True):
         self.file_name = file_name
         self.chunk_size = chunk_size
         if chunk_size==None or chunk_size<=0: # read entire file as one chunk
             self.chunk_size=np.iinfo(np.int32).max
         self.shuf = shuf
         self.bucket = bucket
+        self.verbose = verbose
         self.regex = regex
         if regex:
             self.regex = re.compile(regex)
@@ -79,7 +80,8 @@ class ChunkReader(object):
     def chunk_stream(self, stop=True):
         while True:
             self.eof = False
-            print('READING... ', self.file_name)
+            if self.verbose:
+                print('READING... ', self.file_name)
             with codecs.open(self.file_name, "r", "utf-8") as f:
                 while not self.eof:
                     yield self.next_chunk(f)
@@ -99,13 +101,14 @@ class ChunkReader(object):
                 print('{} | {}'.format(i,line))
 
 class GlobReader(object):
-    def __init__(self, file_pattern, chunk_size=1000, shuf=True, regex=None, seed=None, bucket=None):
+    def __init__(self, file_pattern, chunk_size=1000, shuf=True, regex=None, seed=None, bucket=None, verbose=True):
         self.file_pattern = file_pattern
         self.file_names = glob.glob(self.file_pattern)
         self.file_names.sort()
         self.chunk_size = chunk_size
         self.shuf = shuf
         self.bucket = bucket
+        self.verbose = verbose
         self.regex = regex
         if seed==None or seed<=0:
             self.seed = get_seed()
@@ -138,6 +141,7 @@ class GlobReader(object):
                                             chunk_size=self.chunk_size, 
                                             shuf=self.shuf,
                                             bucket=self.bucket,
+                                            verbose=self.verbose,
                                             regex=self.regex, 
                                             seed=self.seed)
                 for chunk in chunk_reader.chunk_stream(stop=True):
@@ -150,13 +154,18 @@ class GlobReader(object):
             for line in chunk:
                 yield line
 
+num_regex = re.compile('^[+-]?[0-9]+\.?[0-9]*$')
+def is_number(token):
+    return bool(num_regex.match(token))
+
 '''
 returns dictionary: words->[word indices]
                     chars->[char indices]
 set words=None, chars=None if not desired
 '''
+punc = set(['-','--',',',':','.','...','\'','(',')','&','#','$'])
 class TextParser(object):
-    def __init__(self, word_vocab=None, char_vocab=None, max_word_length=None, reader=None, words='w', chars='c', eos='+', sep=' ', tokenize=False):
+    def __init__(self, word_vocab=None, char_vocab=None, max_word_length=None, reader=None, words='w', chars='c', eos='+', sep=' ', tokenize=False, keep_unk=True):
         self.word_vocab = word_vocab
         self.char_vocab = char_vocab
         self.max_word_length = max_word_length
@@ -166,6 +175,7 @@ class TextParser(object):
         self.eos = eos
         self.sep = sep
         self._tokenize = tokenize
+        self.keep_unk = keep_unk
         if tokenize:
             self._tokenize = U.tokenize
         
@@ -182,9 +192,15 @@ class TextParser(object):
         for word in toks:
             word = Vocab.clean(word, self.max_word_length, lower=(self.char_vocab==None))
             
+            if is_number(word):
+                word='1'
+            elif word in punc:
+                continue
+            
             if self.word_vocab:
                 word_idx = self.word_vocab.get(word)
-                word_tokens.append(word_idx)
+                if word_idx>0 or self.keep_unk:
+                    word_tokens.append(word_idx)
             
             if self.char_vocab:
                 char_array = Vocab.get_char_aray(word, self.char_vocab, self.word_vocab)
@@ -417,6 +433,7 @@ def pad_sequences(sequences, trim_words=False, max_text_length=None, max_word_le
     seq_lengths = map(len, sequences)
     if trim_words:
         max_text_length = max(seq_lengths)
+        #max_text_length+=100
     
     sample_shape = tuple()
     d = nest_depth(sequences)
@@ -454,7 +471,7 @@ def pad_sequences(sequences, trim_words=False, max_text_length=None, max_word_le
             
 ## reader=FieldParser
 class EssayBatcher(object):
-    def __init__(self, reader, batch_size, max_text_length=None, max_word_length=None, trim_words=False, trim_chars=False, ystats=None):
+    def __init__(self, reader, batch_size, max_text_length=None, max_word_length=None, trim_words=False, trim_chars=False, ystats=None, verbose=True):
         self.reader = reader
         self.batch_size = batch_size
         self.trim_words = trim_words
@@ -470,7 +487,8 @@ class EssayBatcher(object):
             self.max_word_length = None
         if ystats is None and reader!=None:
             ystats = reader.get_ystats()# for ATS: reader=field_parser
-            print('\nYSTATS (mean,std,min,max,#): {}\n'.format(ystats))
+            if verbose:
+                print('\nYSTATS (mean,std,min,max,#): {}\n'.format(ystats))
         self.ystats = ystats
     
     ## to interval [0,1]
@@ -568,6 +586,10 @@ class EssayBatcher(object):
             
             
     def batch_stream2(self, x, y, w=True, c=False, partial=True, trim_words=None):
+        ## random shuffle entire set
+        x,y = U.shuffle_arrays(x,y)
+        
+        ##
         labels, words, j = [],[],0
         self._word_count = 0
         for i in range(len(y)):
@@ -581,14 +603,15 @@ class EssayBatcher(object):
         if j>0 and partial:
             yield self.batch2(labels, words)
 
-    def batch2(self, labels=None, words=None, trim_words=None):
+    def batch2(self, labels=None, words=None, trim_words=None, shuf=False):
         n = len(labels)
         b = { 'n' : n }
         
         # shuffle
-        p = np.random.permutation(n)
-        q = [i+n for i in range(self.batch_size-n)]
-        p = np.hstack([p,q]).astype(np.int32)
+        if shuf:
+            p = np.random.permutation(n)
+            q = [i+n for i in range(self.batch_size-n)]
+            p = np.hstack([p,q]).astype(np.int32)
         
         # if not full batch.....just copy first item to fill
         for i in range(self.batch_size-n):
@@ -597,19 +620,19 @@ class EssayBatcher(object):
         
         ############################################################
         y = np.array(labels, dtype=np.float32)
-        y = y[p]
-        #y = self.normalize(y)
+        if shuf: y = y[p]
         y = y[...,None]#y = np.expand_dims(y, 1)
-        b['y'] = y                                  # <-- THIS key ('y') SHOULD COME FROM FIELD_PARSER.fields
+        b['y'] = y
         
         ############################################################
-        #word_tensor, seq_lengths = pad_sequences(words, trim_words=trim_words, max_text_length=self.max_text_length)
         word_tensor = np.array(words, dtype=np.float32)
-        word_tensor = word_tensor[p]
+        if shuf: word_tensor = word_tensor[p]
+        
         ####################
+        ## TRIM KERAS SEQUENCES to LONGEST in BATCH!!!
         nz = first_nonzero(word_tensor)
         mz = min(nz)
-        #mz = max(0,mz-50)
+        #mz = max(0, mz-100)
         
         ##1
         word_tensor = word_tensor[:,mz:]
@@ -634,9 +657,9 @@ class EssayBatcher(object):
         ############################################################
         max_seq_length = word_tensor.shape[1]
         seq_lengths = [max_seq_length for x in labels]
-        
         b['s'] = seq_lengths
         
+        ####################
         return adict(b)
 
 def first_nonzero(a):

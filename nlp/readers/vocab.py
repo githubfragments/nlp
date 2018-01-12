@@ -55,7 +55,7 @@ def load_word_list(file):
             words.append(strip_non_ascii(word))
     return words
 
-def load_embeddings(file, filter_words=None):
+def load_embeddings(file, filter_words=None, verbose=True, dummy=None):
     has_header = check_header(file)
     word2emb = {}
     with codecs.open(file, "r", "utf-8") as f:
@@ -67,9 +67,13 @@ def load_embeddings(file, filter_words=None):
             if filter_words:
                 if not word in filter_words:
                     continue
-            v = line.split()[1:]
-            word2emb[word] = np.array(v, dtype='float32')
-    print('Loaded {} word embeddings of dim {}'.format(len(word2emb), word2emb[next(iter(word2emb))].size))
+            if dummy!=None:
+                word2emb[word]=dummy
+            else:
+                v = line.split()[1:]
+                word2emb[word] = np.array(v, dtype='float32')
+    if verbose:
+        print('Loaded {} word embeddings of dim {}'.format(len(word2emb), word2emb[next(iter(word2emb))].size))
     return word2emb
 
 class Vocab:
@@ -202,11 +206,15 @@ class Vocab:
         return word_vocab, char_vocab, actual_max_word_length
 
     @staticmethod
-    def load_word_embeddings(emb_file, data_file, min_freq=1, unk='<unk>'):
+    def load_word_embeddings(emb_file, data_file, min_freq=1, unk='<unk>', verbose=True, dummy=False):
         wc = word_counts(data_file, min_freq)
         words = set(wc)
         words.discard(unk)
-        word2emb = load_embeddings(emb_file, filter_words=words)
+        
+        dummy_vector = None
+        if dummy:
+            dummy_vector = np.zeros([2], dtype=np.float32)
+        word2emb = load_embeddings(emb_file, filter_words=words, verbose=verbose, dummy=dummy_vector)
         #words = list(word2emb)
         
         #z = np.zeros_like(word2emb[next(iter(word2emb))])
@@ -219,6 +227,7 @@ class Vocab:
         for word in list(word2emb):
             idx = word_vocab.feed(word)
             E[idx,:] = word2emb[word]
+            print(word)
         
         # returns embedding matrix, word_vocab
         return E, word_vocab
