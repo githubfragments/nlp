@@ -163,7 +163,10 @@ returns dictionary: words->[word indices]
                     chars->[char indices]
 set words=None, chars=None if not desired
 '''
-punc = set(['-','--',',',':','.','...','\'','(',')','&','#','$'])
+
+#punc = set(['-','--',',',':','.','...','\'','(',')','&','#','$'])
+punc = set(['-','--',':','...','\'','(',')','&','#','$'])
+
 class TextParser(object):
     def __init__(self, word_vocab=None, char_vocab=None, max_word_length=None, reader=None, words='w', chars='c', eos='+', sep=' ', tokenize=False, keep_unk=True):
         self.word_vocab = word_vocab
@@ -187,18 +190,22 @@ class TextParser(object):
     ''' parses line into word/char tokens, based on vocab(s) '''
     def _parse_line(self, line, word_tokens, char_tokens):
         line = Vocab.clean_line(line)
+        
         toks = self.tokenize(line)
         
         for word in toks:
             word = Vocab.clean(word, self.max_word_length, lower=(self.char_vocab==None))
             
-            if self.char_vocab is None:
-                if is_number(word):
-                    word='<num>'
+#             if self.char_vocab is None:
+
+#             if is_number(word):
+#                 word='1'
+            if word in punc:
+                continue
             
             if self.word_vocab:
                 word_idx = self.word_vocab.get(word)
-                if word_idx>0 or self.keep_unk:
+                if word_idx>self.word_vocab.unk_index or self.keep_unk:
                     word_tokens.append(word_idx)
             
             if self.char_vocab:

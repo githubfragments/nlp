@@ -164,10 +164,9 @@ class Vocab:
     
     @staticmethod
     def clean_line(line):
-        #line = clean_tags(line)
-        #line = corr(line)
-        # LOOKUP ets_reader.py 'is_number' for number processing!!!
-        return corr(clean_tags(line))
+        line = clean_tags(line)
+        line = corr(line)
+        return line
         
 
     @staticmethod
