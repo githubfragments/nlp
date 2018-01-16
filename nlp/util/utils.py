@@ -28,7 +28,7 @@ def tokenize(string):
 
 def read_col(file, col, sep="\t", header=None, type='int32'):
     df = pd.read_csv(file, sep=sep, header=header)#.sort_values(by=col)
-    vals = df[col].values.astype(type)
+    vals = df[df.columns[col]].values.astype(type)
     return vals
     
 class adict(dict):

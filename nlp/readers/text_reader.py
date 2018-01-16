@@ -192,10 +192,9 @@ class TextParser(object):
         for word in toks:
             word = Vocab.clean(word, self.max_word_length, lower=(self.char_vocab==None))
             
-            if is_number(word):
-                word='1'
-            elif word in punc:
-                continue
+            if self.char_vocab is None:
+                if is_number(word):
+                    word='<num>'
             
             if self.word_vocab:
                 word_idx = self.word_vocab.get(word)

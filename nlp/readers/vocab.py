@@ -7,6 +7,8 @@ import re
 from future_builtins import map  # Only on Python 2
 from collections import Counter
 from itertools import chain
+from nlp.util import utils as U
+
 
 def word_counts(filename, min_freq=1):
     with open(filename) as f:
@@ -55,7 +57,7 @@ def load_word_list(file):
             words.append(strip_non_ascii(word))
     return words
 
-def load_embeddings(file, filter_words=None, verbose=True, dummy=None):
+def load_embeddings(file, filter_words=None, verbose=True):
     has_header = check_header(file)
     word2emb = {}
     with codecs.open(file, "r", "utf-8") as f:
@@ -67,19 +69,21 @@ def load_embeddings(file, filter_words=None, verbose=True, dummy=None):
             if filter_words:
                 if not word in filter_words:
                     continue
-            if dummy!=None:
-                word2emb[word]=dummy
-            else:
-                v = line.split()[1:]
-                word2emb[word] = np.array(v, dtype='float32')
+
+            v = line.split()[1:]
+            word2emb[word] = np.array(v, dtype='float32')
     if verbose:
         print('Loaded {} word embeddings of dim {}'.format(len(word2emb), word2emb[next(iter(word2emb))].size))
     return word2emb
 
 class Vocab:
-    def __init__(self, token2index=None, index2token=None):
+    def __init__(self, 
+                 token2index=None, 
+                 index2token=None,
+                 unk_index=0):
         self._token2index = token2index or {}
         self._index2token = index2token or []
+        self.unk_index = unk_index
         self.reset_counts()
         
     def reset_counts(self):
@@ -112,10 +116,10 @@ class Vocab:
         return index
 
     ''' returns index 0 for unknown tokens! '''
-    def get(self, token, default=0):
-        idx = self._token2index.get(token, default)
+    def get(self, token):
+        idx = self._token2index.get(token, self.unk_index)
         self._tot += 1
-        self._unk += (0 if idx else 1)
+        self._unk += (1 if idx==self.unk_index else 0)
         return idx
     
     def get_index(self, token):
@@ -206,15 +210,13 @@ class Vocab:
         return word_vocab, char_vocab, actual_max_word_length
 
     @staticmethod
-    def load_word_embeddings(emb_file, data_file, min_freq=1, unk='<unk>', verbose=True, dummy=False):
+    def load_word_embeddings_ORIG(emb_path, emb_dim, data_file, min_freq=1, unk='<unk>', verbose=True):
         wc = word_counts(data_file, min_freq)
         words = set(wc)
         words.discard(unk)
         
-        dummy_vector = None
-        if dummy:
-            dummy_vector = np.zeros([2], dtype=np.float32)
-        word2emb = load_embeddings(emb_file, filter_words=words, verbose=verbose, dummy=dummy_vector)
+        emb_file = emb_path.format(emb_dim)
+        word2emb = load_embeddings(emb_file, filter_words=words, verbose=verbose)
         #words = list(word2emb)
         
         #z = np.zeros_like(word2emb[next(iter(word2emb))])
@@ -227,9 +229,45 @@ class Vocab:
         for word in list(word2emb):
             idx = word_vocab.feed(word)
             E[idx,:] = word2emb[word]
-            print(word)
+            #print(word)
         
         # returns embedding matrix, word_vocab
+        return E, word_vocab
+    
+    @staticmethod
+    def load_word_embeddings(emb_path, emb_dim, data_file, min_freq=1, verbose=True):
+        ## pre-load emb words
+        from deepats import ets_reader
+        from deepats.w2vEmbReader import W2VEmbReader as EmbReader
+        
+        emb_reader = EmbReader(emb_path, emb_dim)
+        emb_words = emb_reader.load_words()
+        
+        text = U.read_col(data_file, col=-1, type='string')
+        vocab = ets_reader.create_vocab(text, tokenize_text=True, to_lower=True, min_word_freq=min_freq, emb_words=emb_words)
+        #  vocab = {'<pad>':0, '<unk>':1, '<num>':2, .....}
+        
+        #######################################################
+        pad='<pad>';unk='<unk>';num='<num>'
+        words = set(vocab)
+        words.discard(pad);words.discard(unk);words.discard(num)
+        
+        emb_file = emb_path.format(emb_dim)
+        word2emb = load_embeddings(emb_file, filter_words=words, verbose=verbose)
+        
+        n = len(word2emb) + 3
+        d = word2emb[next(iter(word2emb))].size
+        E = np.zeros([n, d], dtype=np.float32)# <unk> is given all-zero embedding... at E[0,:]
+        
+        word_vocab = Vocab(unk_index=1)
+        word_vocab.feed(pad)    # <pad> is at index 0 in word vocab
+        word_vocab.feed(unk)    # <unk> is at index 1 in word vocab --> so idx=1 returned for unknown toks
+        word_vocab.feed(num)    # <num> is at index 2 in word vocab
+        for word in list(word2emb):
+            idx = word_vocab.feed(word)
+            E[idx,:] = word2emb[word]
+            #print(word)
+        
         return E, word_vocab
             
 def test1():
@@ -251,14 +289,19 @@ def test3():
     return d
 
 def test4():
-    emb_dir = '/home/david/data/embed'
-    emb_file = os.path.join(emb_dir, 'glove.6B.100d.txt')
-    data_dir = '/home/david/data/ets1b/2016'
-    id = 63986; data_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
+    emb_path = '/home/david/data/embed/glove.6B.{}d.txt'
+    emb_dim = 100
+    
+#     data_dir = '/home/david/data/ets1b/2016'
+#     id = 63986; data_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
+    
+    data_dir = '/home/david/data/ats/ets'
+    id = 61190; essay_file = os.path.join(data_dir, '{0}', 'text.txt').format(id)
     
     #words = set(word_counts(data_file, min_freq=1))
     #word2emb = load_embeddings(emb_file, filter_words=words)
-    E, word_vocab = Vocab.load_word_embeddings(emb_file, data_file, min_freq=1)
+    E, word_vocab = Vocab.load_word_embeddings(emb_path, emb_dim, essay_file, min_freq=2)
+    print(E.shape)
     
 if __name__ == '__main__':
     #test1()
