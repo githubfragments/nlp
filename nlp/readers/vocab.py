@@ -225,6 +225,11 @@ class Vocab:
         
         word_vocab = Vocab()
         word_vocab.feed(unk)    # <unk> is at index 0 in word vocab --> so idx=0 returned for unknown toks
+        
+#         word_vocab = Vocab(unk_index=1)
+#         word_vocab.feed('<pad>')    # <pad> is at index 0 in word vocab
+#         word_vocab.feed(unk)    # <unk> is at index 1 in word vocab --> so idx=1 returned for unknown toks
+        
         for word in list(word2emb):
             idx = word_vocab.feed(word)
             E[idx,:] = word2emb[word]
