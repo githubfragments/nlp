@@ -29,6 +29,8 @@ from nlp.rhn.rhn import RHNCell2 as RHNCell
 
 from nlp.rnn_cells.lru import LRUCell
 
+from nlp.hyper.tf_layer_norm import HyperLnLSTMCell
+
 '''
 https://github.com/deepmind/sonnet/blob/master/sonnet/examples/rnn_shakespeare.py
 '''
@@ -285,6 +287,13 @@ def rnn_unit(args):
         kwargs = { 'depth' : args.FLAGS.rhn_highway_layers }
     elif args.unit=='lru':
         rnn = LRUCell
+    elif args.unit=='hlstm':
+        rnn = HyperLnLSTMCell
+        kwargs = {'is_layer_norm':True,
+                  'state_is_tuple':False,
+                  'hyper_num_units':128,
+                  'hyper_embedding_size':32,
+                  }
     return rnn, kwargs
 
 def get_initial_state(cell, args):
@@ -327,6 +336,8 @@ def get_final_state(final_state, unit=None):
             return final_state[1]
         elif unit=='lstm':
             return final_state.c
+        elif unit=='hlstm':
+            return final_state[1]
         elif unit=='rda':
             return final_state.h
         elif unit.startswith('rwa'):
