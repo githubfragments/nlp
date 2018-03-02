@@ -13,18 +13,54 @@ import itertools
 import glob
 import pickle
 import time
+import re
 from timeit import default_timer as timer
 import tensorflow as tf
 
+punc = '(),'# ?!
+word_pattern = r'([0-9]+[0-9,.]*[0-9]+|[\w]+|[{}])'.format(punc)
+
 from nltk.tokenize import RegexpTokenizer
-tokenizer = RegexpTokenizer(r'\w+')
-def tokenize(string):
-    tokens = tokenizer.tokenize(string.lower())
+tokenizer = RegexpTokenizer(word_pattern)
+
+def tokenize_OLD(string):
+    tokens = tokenizer.tokenize(string)
     for index, token in enumerate(tokens):
         if token == '@' and (index+1) < len(tokens):
             tokens[index+1] = '@' + re.sub('[0-9]+.*', '', tokens[index+1])
             tokens.pop(index)
     return tokens
+
+from nltk.tokenize import sent_tokenize, word_tokenize
+import nltk
+sent_tokenizer = nltk.tokenize.punkt.PunktSentenceTokenizer()
+from sentence_tokenizer import split_into_sentences
+
+def clean(s):
+    s = re.sub("([0-9]+),([0-9]+)", "\\1COMMA\\2", s)
+    for c in punc:
+        a = '[{0}][\s{0}]*[{0}]*'.format(c)
+        b = ' {0} '.format(c)
+        s = re.sub('[{0}][\s{0}]*[{0}]*'.format(c), ' {0} '.format(c), s)
+    s = re.sub("COMMA", ",", s)
+    return s
+    
+def tokenize_NEW(string):
+    string = re.sub("[.]\s*[.]\s*[.]"," . ", string)
+    string = re.sub("([\w']+)-([\w']+)", "\\1 - \\2", string)
+    
+    sents = sent_tokenize(string)
+    #sents2 = sent_tokenizer.tokenize(string)
+    #sents3 = split_into_sentences(string)
+    
+    #words = [word_tokenize(clean(s)) for s in sents if len(s)>1]
+    tokens = [tokenizer.tokenize(clean(s)) + [u'.'] for s in sents if len(s)>1]
+    
+    return list(itertools.chain(*tokens))
+
+def tokenize(string):
+    #return tokenize_OLD(string.lower())
+    return tokenize_NEW(string.lower())
 
 def read_col(file, col, sep="\t", header=None, type='int32'):
     df = pd.read_csv(file, sep=sep, header=header)#.sort_values(by=col)

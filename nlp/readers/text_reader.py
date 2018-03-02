@@ -165,7 +165,8 @@ set words=None, chars=None if not desired
 '''
 
 #punc = set(['-','--',',',':','.','...','\'','(',')','&','#','$'])
-punc = set(['-','--',':','...','\'','(',')','&','#','$'])
+#punc = set(['-','--',':','...','\'','(',')','&','#','$'])
+punc = set(['-','--',':','...','\'','&','#','$'])
 
 class TextParser(object):
     def __init__(self, word_vocab=None, char_vocab=None, max_word_length=None, reader=None, words='w', chars='c', eos='+', sep=' ', tokenize=False, keep_unk=True):
@@ -197,10 +198,8 @@ class TextParser(object):
             word = Vocab.clean(word, self.max_word_length, lower=(self.char_vocab==None))
             
             if self.char_vocab is None:
-
                 if word in punc:
                     continue
-            
 #                 if is_number(word):
 #                     word='1'
             

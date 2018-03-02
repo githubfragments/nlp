@@ -573,9 +573,32 @@ class Reshape(snt.AbstractModule):
         dim = inputs.get_shape().as_list()[1]
         return tf.reshape(inputs, [self.batch_size, self.num_unroll_steps, dim])
 
-def softmask(x, axis=-1, mask=None):
+def mellowmax(x, axis=-1, omega=0.01, mask=None):
+    #n = x.shape[axis]
+    #n = x.get_shape().as_list()[axis]
+    omega = tf.Variable(tf.constant(omega, dtype=tf.float32), trainable=False)
+    
+    #ans = (F.logsumexp(omega * x, axis=axis) - np.log(n)) / omega
+    #ans = (tf.reduce_logsumexp(omega * x, axis=axis)  - tf.log(n)) / omega
+    
+    ex = tf.exp(omega * x)
+    if mask!=None:
+        ex = tf.multiply(ex, mask)
+    
+    n = tf.reduce_sum(mask, axis=axis, keep_dims=True)
+    ans = (tf.log(tf.reduce_sum(ex, axis=axis, keep_dims=True)) - tf.log(n)) / omega
+    
+    return ans
+
+def softmask(x, axis=-1, mask=None, T=None):
     x_max = tf.reduce_max(x, axis=axis, keep_dims=True)
     x = x - x_max
+    
+    if T!=None:
+#         if not tf.is_numeric_tensor(T):
+#             T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(T), dtype=tf.float32, trainable=True)
+        x = x/T
+    
     ex = tf.exp(x)
     
     if mask!=None:
@@ -700,7 +723,9 @@ class Attention(snt.AbstractModule):
         #beta = tf.tensordot(v, u, axes=1)
         beta = tf.einsum('ijk,k->ij', v, u)
         
-        alpha = softmask(beta, mask=mask)
+        ## SOFTMAX
+        T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(1.0), dtype=tf.float32, trainable=True)
+        alpha = softmask(beta, mask=mask, T=None)
         
         ''' attn pooling '''
         output = tf.reduce_sum(inputs * tf.expand_dims(alpha, -1), 1)
@@ -709,9 +734,12 @@ class Attention(snt.AbstractModule):
         ps(inputs, 'inputs')
         ps(z, 'z')
         ps(v, 'v')
+        ps(mask, 'mask')
         ps(beta, 'beta')
         ps(alpha, 'alpha')
         ps(output, 'output')
+        
+        self.outputs = (mask, beta, T)
         
         return output
     
