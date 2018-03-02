@@ -12,6 +12,7 @@ import glob
 import re
 import pickle
 import time
+import itertools
 
 from vocab import Vocab
 from nlp.util.utils import adict, get_seed, arrayfun, adict
@@ -176,6 +177,8 @@ class TextParser(object):
         self.reader = reader
         self.words = words
         self.chars = chars
+        self.ws = 'ws'
+        self.cs = 'cs'
         self.eos = eos
         self.sep = sep
         self._tokenize = tokenize
@@ -192,37 +195,47 @@ class TextParser(object):
     def _parse_line(self, line, word_tokens, char_tokens):
         line = Vocab.clean_line(line)
         
-        toks = self.tokenize(line)
+        sentences = self.tokenize(line)
+        #toks = list(itertools.chain(*sentences))
         
-        for word in toks:
-            word = Vocab.clean(word, self.max_word_length, lower=(self.char_vocab==None))
-            
-            if self.char_vocab is None:
-                if word in punc:
-                    continue
-#                 if is_number(word):
-#                     word='1'
-            
-            if self.word_vocab:
-                word_idx = self.word_vocab.get(word)
-                if word_idx>self.word_vocab.unk_index or self.keep_unk:
-                    word_tokens.append(word_idx)
-            
-            if self.char_vocab:
-                char_array = Vocab.get_char_aray(word, self.char_vocab, self.word_vocab)
-                char_tokens.append(char_array)
+        ws, cs = [0],[0]
+        
+        for toks in sentences:
+            for word in toks:
+                word = Vocab.clean(word, self.max_word_length, lower=(self.char_vocab==None))
                 
-        if self.eos:
-            if self.word_vocab: word_tokens.append(self.word_vocab.get(self.eos))
-            if self.char_vocab: char_tokens.append(self.char_vocab.get_tok_array(self.eos))
+                if self.char_vocab is None:
+                    if word in punc:
+                        continue
+    #                 if is_number(word):
+    #                     word='1'
+                
+                if self.word_vocab:
+                    word_idx = self.word_vocab.get(word)
+                    if word_idx>self.word_vocab.unk_index or self.keep_unk:
+                        word_tokens.append(word_idx)
+                
+                if self.char_vocab:
+                    char_array = Vocab.get_char_aray(word, self.char_vocab, self.word_vocab)
+                    char_tokens.append(char_array)
+                    
+            if self.eos:
+                if self.word_vocab: word_tokens.append(self.word_vocab.get(self.eos))
+                if self.char_vocab: char_tokens.append(self.char_vocab.get_tok_array(self.eos))
             
-        return word_tokens, char_tokens
+            ws.append(len(word_tokens))
+            cs.append(len(char_tokens))
+        
+        #ww = U.lindexsplit(word_tokens, ws)
+        #cc = U.lindexsplit(char_tokens, cs)
+            
+        return word_tokens, char_tokens, ws, cs
     
     def parse_line(self, line):
         return self.package(*self._parse_line(line, word_tokens=[], char_tokens=[]))
     
-    def package(self, word_tokens, char_tokens):
-        return adict( { self.words:word_tokens , self.chars:char_tokens } )
+    def package(self, word_tokens, char_tokens, ws, cs):
+        return adict( { self.words:word_tokens , self.chars:char_tokens, self.ws:ws , self.cs:cs } )
     
     def chunk_stream(self, reader=None, stop=True):
         if reader==None:

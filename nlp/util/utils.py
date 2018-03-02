@@ -48,15 +48,18 @@ def clean(s):
 def tokenize_NEW(string):
     string = re.sub("[.]\s*[.]\s*[.]"," . ", string)
     string = re.sub("([\w']+)-([\w']+)", "\\1 - \\2", string)
+    string = re.sub("[+]","", string)
     
     sents = sent_tokenize(string)
     #sents2 = sent_tokenizer.tokenize(string)
     #sents3 = split_into_sentences(string)
     
     #words = [word_tokenize(clean(s)) for s in sents if len(s)>1]
-    tokens = [tokenizer.tokenize(clean(s)) + [u'.'] for s in sents if len(s)>1]
+    #tokens = [tokenizer.tokenize(clean(s)) + [u'.'] for s in sents if len(s)>1]
+    tokens = [tokenizer.tokenize(clean(s)) for s in sents if len(s)>1]
     
-    return list(itertools.chain(*tokens))
+    #return list(itertools.chain(*tokens))
+    return tokens
 
 def tokenize(string):
     #return tokenize_OLD(string.lower())
@@ -101,6 +104,17 @@ def shuffle_arrays(*xx):
     for x in xx:
         yy += (x[p],)
     return yy
+
+def lindexsplit(x, idx):
+    return [x[start:end] for start, end in zip(idx, idx[1:])]
+
+    # For a little more brevity, here is the list comprehension of the following
+    # statements:
+    #    return [some_list[start:end] for start, end in zip(args, args[1:])]
+#     my_list = []
+#     for start, end in zip(args, args[1:]):
+#         my_list.append(some_list[start:end])
+#     return my_list
 
 def memoize(f):
     """ Memoization decorator for a function taking one or more arguments. """
