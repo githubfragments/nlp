@@ -94,5 +94,6 @@ ENV/
 chkpt/
 models/
 old/
+.settings/
 .project
 /.pydevproject
