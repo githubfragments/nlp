@@ -228,6 +228,10 @@ class TextParser(object):
         
         #ww = U.lindexsplit(word_tokens, ws)
         #cc = U.lindexsplit(char_tokens, cs)
+        
+#         if len(word_tokens)<1:
+#             print(word_tokens)
+#             print('\n\nHERE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n')
             
         return word_tokens, char_tokens, ws, cs
     
@@ -444,8 +448,15 @@ class TextBatcher(object):
                 yield adict( { 'w':w , 'c':c } )
 
 def nest_depth(x):
-    depth = lambda L: isinstance(L, list) and max(map(depth, L))+1
-    return depth(x)
+    #depth = lambda L: isinstance(L, list) and max(map(depth, L))+1
+    #return depth(x)
+    depths = []
+    for item in x:
+        if isinstance(item, list):
+            depths.append(nest_depth(item))
+    if len(depths) > 0:
+        return 1 + max(depths)
+    return 1
         
 def pad_sequences(sequences, trim_words=False, max_text_length=None, max_word_length=None, dtype='int32', wpad='post', cpad='post', value=0.):
     num_samples = len(sequences)
@@ -591,6 +602,9 @@ class EssayBatcher(object):
             if hit_ids:
                 if d.id not in hit_ids:
                     continue
+            if len(d.w)==0:
+                continue
+            
             ids.append(d.id)
             labels.append(d.y)
             words.append(d.w); self._word_count+=len(d.w)

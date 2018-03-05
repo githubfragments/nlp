@@ -725,7 +725,7 @@ class Attention(snt.AbstractModule):
         
         ## SOFTMAX
         T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(1.0), dtype=tf.float32, trainable=True)
-        alpha = softmask(beta, mask=mask, T=None)
+        alpha = softmask(beta, mask=mask, T=T)
         
         ''' attn pooling '''
         output = tf.reduce_sum(inputs * tf.expand_dims(alpha, -1), 1)
