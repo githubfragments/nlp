@@ -170,7 +170,7 @@ set words=None, chars=None if not desired
 punc = set(['-','--',':','...','\'','&','#','$'])
 
 class TextParser(object):
-    def __init__(self, word_vocab=None, char_vocab=None, max_word_length=None, reader=None, words='w', chars='c', eos='+', sep=' ', tokenize=False, keep_unk=True):
+    def __init__(self, word_vocab=None, char_vocab=None, max_word_length=None, reader=None, words='w', chars='c', eos='+', sep=' ', tokenize=True, keep_unk=True):
         self.word_vocab = word_vocab
         self.char_vocab = char_vocab
         self.max_word_length = max_word_length
@@ -542,7 +542,7 @@ class EssayBatcher(object):
             self._word_count = 0
         return wc
     
-    def batch(self, ids=None, labels=None, words=None, chars=None, w=None, c=None, trim_words=None, wpad='post'):
+    def batch(self, ids=None, labels=None, words=None, chars=None, w=None, c=None, trim_words=None, wpad='pre'):
         if ids:
             self.last = (ids, labels, words, chars, w, c)
         else:
@@ -588,7 +588,7 @@ class EssayBatcher(object):
     use batch padding!
     https://r2rt.com/recurrent-neural-networks-in-tensorflow-iii-variable-length-sequences.html
     '''
-    def batch_stream(self, stop=False, skip_ids=None, hit_ids=None, w=True, c=True, min_cut=1.0, partial=False, trim_words=None, wpad='post'):
+    def batch_stream(self, stop=False, skip_ids=None, hit_ids=None, w=True, c=True, min_cut=1.0, partial=False, trim_words=None, wpad='pre'):
         t=None
         if min_cut<1.0:
             t = sample_dict(self.ystats.v, self.ystats.c, min_cut=min_cut)
@@ -715,69 +715,6 @@ def test_text_reader():
         
     for d in text_parser.chunk_stream(stop=True):
         print(len(d.w))
-        
-def test_text_batcher():
-    data_dir = '/home/david/data/ets1b/2016'
-    vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
-    #shard_patt = os.path.join(data_dir, 'train', 'ets.2016-00001-of-00100')
-    shard_patt = os.path.join(data_dir, 'holdout', 'ets.2016.heldout-0000*-of-00050')
-    
-    reader =  GlobReader(shard_patt, chunk_size=1000, shuf=True)
-    
-    word_vocab, char_vocab, max_word_length = Vocab.load_vocab(vocab_file)
-    text_parser = TextParser(word_vocab=word_vocab, char_vocab=char_vocab, max_word_length=max_word_length, reader=reader)
-    
-    batcher = TextBatcher(reader=text_parser, batch_size=128, num_unroll_steps=20, batch_chunk=50, trim_chars=True)
-    
-    #i=1
-    for b in batcher.batch_stream(stop=True):
-        #print(x)
-        #print(y)
-        print('{}\t{}'.format(b.w.shape, b.c.shape))
-        #print(i);i=i+1
-
-''' GLOVE WORD EMBEDDINGS '''       
-def test_essay_batcher_2():
-    emb_dir = '/home/david/data/embed'
-    emb_file = os.path.join(emb_dir, 'glove.6B.100d.txt')
-    U.seed_random(1234)
-    
-#     data_dir = '/home/david/data/ets1b/2016'
-#     id = 63986; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
-    
-    data_dir = '/home/david/data/ats/ets'
-    id = 55433; essay_file = os.path.join(data_dir, '{0}', 'text.txt').format(id)
-    
-    reader =  GlobReader(essay_file, chunk_size=1000, regex=REGEX_NUM, shuf=True)
-    
-    E, word_vocab = Vocab.load_word_embeddings(emb_file, essay_file, min_freq=10)
-    text_parser = TextParser(word_vocab=word_vocab)
-    
-    fields = {0:'id', 1:'y', -1:text_parser}
-    field_parser = FieldParser(fields, reader=reader, seed=1234)
-    
-    batcher = EssayBatcher(reader=field_parser, batch_size=128, trim_words=True)
-    for b in batcher.batch_stream(stop=True, min_cut=0.5):
-        print('{}\t{}'.format(b.w.shape, b.y.shape))
-
-''' CHAR EMBEDDINGS '''
-def test_essay_batcher_1():
-    data_dir = '/home/david/data/ets1b/2016'
-    vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
-    id = 62051 # 63986 62051 70088
-    essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
-    
-    reader =  GlobReader(essay_file, chunk_size=1000, regex=REGEX_NUM, shuf=True)
-    
-    word_vocab, char_vocab, max_word_length = Vocab.load_vocab(vocab_file)
-    text_parser = TextParser(word_vocab=word_vocab, char_vocab=char_vocab, max_word_length=max_word_length)
-    
-    fields = {0:'id', 1:'y', -1:text_parser}
-    field_parser = FieldParser(fields, reader=reader)
-    
-    batcher = EssayBatcher(reader=field_parser, batch_size=128, max_word_length=max_word_length, trim_words=True, trim_chars=False)
-    for b in batcher.batch_stream(stop=True):
-        print('{}\t{}\t{}'.format(b.w.shape, b.c.shape, b.y.shape))
 
 def test_ystats():
     emb_dir = '/home/david/data/embed'
@@ -834,7 +771,71 @@ def test_essay_parser():
     for d in field_parser.line_stream(stop=True):
         print(d.w)
         #break
-               
+
+def test_text_batcher():
+    data_dir = '/home/david/data/ets1b/2016'
+    vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
+    #shard_patt = os.path.join(data_dir, 'train', 'ets.2016-00001-of-00100')
+    shard_patt = os.path.join(data_dir, 'holdout', 'ets.2016.heldout-0000*-of-00050')
+    
+    reader =  GlobReader(shard_patt, chunk_size=1000, shuf=True)
+    
+    word_vocab, char_vocab, max_word_length = Vocab.load_vocab(vocab_file)
+    text_parser = TextParser(word_vocab=word_vocab, char_vocab=char_vocab, max_word_length=max_word_length, reader=reader)
+    
+    batcher = TextBatcher(reader=text_parser, batch_size=128, num_unroll_steps=20, batch_chunk=50, trim_chars=True)
+    
+    #i=1
+    for b in batcher.batch_stream(stop=True):
+        #print(x)
+        #print(y)
+        print('{}\t{}'.format(b.w.shape, b.c.shape))
+        #print(i);i=i+1
+
+''' CHAR EMBEDDINGS '''
+def test_essay_batcher_1():
+    data_dir = '/home/david/data/ets1b/2016'
+    vocab_file = os.path.join(data_dir, 'vocab_n250.txt')
+    id = 62051 # 63986 62051 70088
+    essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
+    
+    reader =  GlobReader(essay_file, chunk_size=1000, regex=REGEX_NUM, shuf=True)
+    
+    word_vocab, char_vocab, max_word_length = Vocab.load_vocab(vocab_file)
+    text_parser = TextParser(word_vocab=word_vocab, char_vocab=char_vocab, max_word_length=max_word_length)
+    
+    fields = {0:'id', 1:'y', -1:text_parser}
+    field_parser = FieldParser(fields, reader=reader)
+    
+    batcher = EssayBatcher(reader=field_parser, batch_size=128, max_word_length=max_word_length, trim_words=True, trim_chars=False)
+    for b in batcher.batch_stream(stop=True):
+        print('{}\t{}\t{}'.format(b.w.shape, b.c.shape, b.y.shape))
+
+''' GLOVE WORD EMBEDDINGS '''       
+def test_essay_batcher_2():
+    emb_dir = '/home/david/data/embed'; emb_file = os.path.join(emb_dir, 'glove.6B.100d.txt')
+    emb_path = '/home/david/data/embed/glove.6B.{}d.txt'
+    U.seed_random(1234)
+    
+#     data_dir = '/home/david/data/ets1b/2016'
+#     id = 63986; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
+    
+    data_dir = '/home/david/data/ats/ets'
+    id = 55433; essay_file = os.path.join(data_dir, '{0}', 'text.txt').format(id)
+    
+    reader =  GlobReader(essay_file, chunk_size=1000, regex=REGEX_NUM, shuf=True)
+    
+    E, word_vocab = Vocab.load_word_embeddings_ORIG(emb_path, 100, essay_file, min_freq=5)
+    #E, word_vocab = Vocab.load_word_embeddings(emb_file, essay_file, min_freq=2)
+    text_parser = TextParser(word_vocab=word_vocab, keep_unk=False)
+    
+    fields = {0:'id', 1:'y', -1:text_parser}
+    field_parser = FieldParser(fields, reader=reader, seed=1234)
+    
+    batcher = EssayBatcher(reader=field_parser, batch_size=32, trim_words=True)
+    for b in batcher.batch_stream(stop=True):
+        print('{}\t{}'.format(b.w.shape, b.y.shape))
+                 
 if __name__ == '__main__':
     #test_essay_reader()
 #     test_essay_parser()

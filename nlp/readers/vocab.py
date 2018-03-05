@@ -209,7 +209,7 @@ class Vocab:
         return word_vocab, char_vocab, actual_max_word_length
 
     @staticmethod
-    def load_word_embeddings_ORIG(emb_path, emb_dim, data_file, min_freq=1, unk='<unk>', verbose=True):
+    def load_word_embeddings_ORIG(emb_path, emb_dim, data_file, min_freq=1, unk='<unk>', eos='+', verbose=True):
         wc = word_counts(data_file, min_freq)
         words = set(wc)
         words.discard(unk)
@@ -218,17 +218,19 @@ class Vocab:
         word2emb = load_embeddings(emb_file, filter_words=words, verbose=verbose)
         #words = list(word2emb)
         
-        #z = np.zeros_like(word2emb[next(iter(word2emb))])
-        n = len(word2emb) + 1
-        d = word2emb[next(iter(word2emb))].size
-        E = np.zeros([n, d], dtype=np.float32)# <unk> is given all-zero embedding... at E[0,:]
-        
         word_vocab = Vocab()
         word_vocab.feed(unk)    # <unk> is at index 0 in word vocab --> so idx=0 returned for unknown toks
+        if eos:
+            word_vocab.feed(eos)
         
 #         word_vocab = Vocab(unk_index=1)
 #         word_vocab.feed('<pad>')    # <pad> is at index 0 in word vocab
 #         word_vocab.feed(unk)    # <unk> is at index 1 in word vocab --> so idx=1 returned for unknown toks
+
+        #z = np.zeros_like(word2emb[next(iter(word2emb))])
+        n = len(word2emb) + word_vocab.size
+        d = word2emb[next(iter(word2emb))].size
+        E = np.zeros([n, d], dtype=np.float32)# <unk> is given all-zero embedding... at E[0,:]
         
         for word in list(word2emb):
             idx = word_vocab.feed(word)
