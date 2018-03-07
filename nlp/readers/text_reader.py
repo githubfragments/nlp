@@ -13,6 +13,7 @@ import re
 import pickle
 import time
 import itertools
+from tensorflow.python.util import nest
 
 from vocab import Vocab
 from nlp.util.utils import adict, get_seed, arrayfun, adict
@@ -228,10 +229,6 @@ class TextParser(object):
         
         #ww = U.lindexsplit(word_tokens, ws)
         #cc = U.lindexsplit(char_tokens, cs)
-        
-#         if len(word_tokens)<1:
-#             print(word_tokens)
-#             print('\n\nHERE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n')
             
         return word_tokens, char_tokens, ws, cs
     
@@ -457,6 +454,56 @@ def nest_depth(x):
     if len(depths) > 0:
         return 1 + max(depths)
     return 1
+
+def _maxlens(x,d=0):
+    n = len(x)
+    ret = [(n,d)]
+    if n>0 and nest.is_sequence(x[0]):
+        ret.extend(map(lambda y: _maxlens(y,d+1), x))
+    return nest.flatten(ret)
+
+def maxlens(x):
+    v = _maxlens(x)
+    n = v[-1] + 1
+    u = [[] for _ in range(n)]
+    for i in range(int(len(v)/2)):
+        u[v[2*i+1]].append(v[2*i])
+    return map(max,u) 
+
+def pad_sequences_better(sequences, m=None, p=None, dtype='int32', value=0.):
+    sample_shape = maxlens(sequences)
+    if m:
+        ss = list(sample_shape)
+        for i in range(len(m)):
+            if m[i]:
+                ss[i] = m[i]
+        sample_shape = tuple(ss)
+        
+    x = (np.ones(sample_shape) * value).astype(dtype)
+    
+    for i,s in enumerate(sequences):
+        if d > 2:# <-- indicates char sequence
+            y = (np.ones((max_text_length,) + sample_shape) * value).astype(dtype)
+            k = (0 if wpad=='post' else max_text_length-len(s))
+            for j,t in enumerate(s):
+                if j>= max_text_length:
+                    break
+                if cpad == 'post':
+                    y[j+k,:len(t)] = t
+                else:
+                    y[j+k,-len(t):] = t
+            x[i,:] = y
+        else:# <-- otherwise word sequence
+            s = s[:max_text_length]
+            if wpad == 'post':
+                x[i,:len(s)] = s
+            else:
+                x[i,-len(s):] = s
+    
+#     if d<3 and wpad!='post':
+#         seq_lengths = [max_text_length for i in seq_lengths]
+        
+    return x, seq_lengths
         
 def pad_sequences(sequences, trim_words=False, max_text_length=None, max_word_length=None, dtype='int32', wpad='post', cpad='post', value=0.):
     num_samples = len(sequences)
@@ -542,7 +589,20 @@ class EssayBatcher(object):
             self._word_count = 0
         return wc
     
-    def batch(self, ids=None, labels=None, words=None, chars=None, w=None, c=None, trim_words=None, wpad='pre'):
+    def batch(self, 
+              ids=None, 
+              labels=None, 
+              words=None, 
+              chars=None, 
+              w=None, 
+              c=None, 
+              trim_words=None,
+              trim_chars=None,
+              spad='pre', 
+              wpad='pre',
+              cpad='post',
+              split_sentences=False,
+              ):
         if ids:
             self.last = (ids, labels, words, chars, w, c)
         else:
@@ -552,6 +612,8 @@ class EssayBatcher(object):
             trim_words=self.trim_words
         if not trim_words and self.max_text_length==None:
             self.max_text_length = self.reader.get_maxlen()
+        if trim_chars==None:
+            trim_chars=self.trim_chars
             
         n = len(ids)
         b = { 'n' : n }
@@ -571,11 +633,38 @@ class EssayBatcher(object):
         b['y'] = y                                  # <-- THIS key ('y') SHOULD COME FROM FIELD_PARSER.fields
         
         if w and not isListEmpty(words):
+            #from keras.preprocessing import sequence; wt2 = sequence.pad_sequences(words)
+            m = (self.max_text_length,)
+            if trim_words: m = (None,)
+            if split_sentences: m = (None,) + m
+            m = (None,) + m
+            
+            p = (wpad,)
+            if split_sentences: p = (spad,) + p
+            p = (None,) + p
+            
+            #word_tensor, seq_lengths = pad_sequences_better(words, m=m, p=p)
+            
+            #######################
             word_tensor, seq_lengths = pad_sequences(words, trim_words=trim_words, max_text_length=self.max_text_length, wpad=wpad)
             b['w'] = word_tensor
             b['x'] = b['w']
         
         if c and not isListEmpty(chars):
+            m = (self.max_word_length,)
+            if trim_chars: m = (None,)
+            if trim_words: m = (None,) + m
+            else: m = (self.max_text_length,) + m
+            if split_sentences: m = (None,) + m
+            m = (None,) + m
+            
+            p = (wpad,cpad)
+            if split_sentences: p = (spad,) + p
+            p = (None,) + p
+            
+            char_tensor, seq_lengths = pad_sequences_better(chars, m=m, p=p)
+            
+            ########################
             char_tensor, seq_lengths = pad_sequences(chars, trim_words=trim_words, max_text_length=self.max_text_length, max_word_length=self.max_word_length, wpad=wpad)
             b['c'] = char_tensor
             b['x'] = b['c']
@@ -588,7 +677,18 @@ class EssayBatcher(object):
     use batch padding!
     https://r2rt.com/recurrent-neural-networks-in-tensorflow-iii-variable-length-sequences.html
     '''
-    def batch_stream(self, stop=False, skip_ids=None, hit_ids=None, w=True, c=True, min_cut=1.0, partial=False, trim_words=None, wpad='pre'):
+    def batch_stream(self, 
+                     stop=False, 
+                     skip_ids=None, 
+                     hit_ids=None, 
+                     w=True, 
+                     c=True, 
+                     min_cut=1.0, 
+                     partial=False, 
+                     trim_words=None, 
+                     wpad='pre', 
+                     split_sentences=False,
+                     ):
         t=None
         if min_cut<1.0:
             t = sample_dict(self.ystats.v, self.ystats.c, min_cut=min_cut)
@@ -607,15 +707,23 @@ class EssayBatcher(object):
             
             ids.append(d.id)
             labels.append(d.y)
-            words.append(d.w); self._word_count+=len(d.w)
-            chars.append(d.c)
+            self._word_count+=len(d.w)
+            
+            dw = d.w
+            dc = d.c
+            if split_sentences:
+                dw = U.lindexsplit(d.w, d.ws)
+                dc = U.lindexsplit(d.c, d.cs)
+            words.append(dw)
+            chars.append(dc)
+            
             i=i+1
             if i == self.batch_size:
-                yield self.batch(ids, labels, words, chars, w, c, trim_words, wpad=wpad)
+                yield self.batch(ids, labels, words, chars, w, c, trim_words, wpad=wpad, split_sentences=split_sentences)
                 i, ids, labels, words, chars = 0,[],[],[],[]
         
         if i>0 and partial:
-            yield self.batch(ids, labels, words, chars, w, c, trim_words, wpad=wpad)
+            yield self.batch(ids, labels, words, chars, w, c, trim_words, wpad=wpad, split_sentences=split_sentences)
             
             
     def batch_stream2(self, x, y, w=True, c=False, partial=True, trim_words=None):
@@ -811,29 +919,39 @@ def test_essay_batcher_1():
     for b in batcher.batch_stream(stop=True):
         print('{}\t{}\t{}'.format(b.w.shape, b.c.shape, b.y.shape))
 
-''' GLOVE WORD EMBEDDINGS '''       
+''' GLOVE WORD EMBEDDINGS '''
 def test_essay_batcher_2():
+    char = True
+#     char = False
+
+    U.seed_random(1234)
+    keep_unk = False
+    
     emb_dir = '/home/david/data/embed'; emb_file = os.path.join(emb_dir, 'glove.6B.100d.txt')
     emb_path = '/home/david/data/embed/glove.6B.{}d.txt'
-    U.seed_random(1234)
     
-#     data_dir = '/home/david/data/ets1b/2016'
-#     id = 63986; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
+    vocab_dir = '/home/david/data/ets1b/2016'
+    vocab_file = os.path.join(vocab_dir, 'vocab_n250.txt')
     
     data_dir = '/home/david/data/ats/ets'
     id = 55433; essay_file = os.path.join(data_dir, '{0}', 'text.txt').format(id)
+    #     id = 63986; essay_file = os.path.join(data_dir, '{0}', '{0}.txt.clean.tok').format(id)
     
     reader =  GlobReader(essay_file, chunk_size=1000, regex=REGEX_NUM, shuf=True)
     
-    E, word_vocab = Vocab.load_word_embeddings_ORIG(emb_path, 100, essay_file, min_freq=5)
-    #E, word_vocab = Vocab.load_word_embeddings(emb_file, essay_file, min_freq=2)
-    text_parser = TextParser(word_vocab=word_vocab, keep_unk=False)
+    if char:
+        word_vocab, char_vocab, max_word_length = Vocab.load_vocab(vocab_file)
+        text_parser = TextParser(word_vocab=word_vocab, char_vocab=char_vocab, keep_unk=keep_unk)
+    else:
+        E, word_vocab = Vocab.load_word_embeddings_ORIG(emb_path, 100, essay_file, min_freq=5)
+        #E, word_vocab = Vocab.load_word_embeddings(emb_file, essay_file, min_freq=2)
+        text_parser = TextParser(word_vocab=word_vocab, keep_unk=keep_unk)
     
     fields = {0:'id', 1:'y', -1:text_parser}
     field_parser = FieldParser(fields, reader=reader, seed=1234)
     
     batcher = EssayBatcher(reader=field_parser, batch_size=32, trim_words=True)
-    for b in batcher.batch_stream(stop=True):
+    for b in batcher.batch_stream(stop=True, split_sentences=True):
         print('{}\t{}'.format(b.w.shape, b.y.shape))
                  
 if __name__ == '__main__':
