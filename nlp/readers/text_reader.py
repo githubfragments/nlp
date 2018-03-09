@@ -598,10 +598,8 @@ class EssayBatcher(object):
               c=None, 
               trim_words=None,
               trim_chars=None,
-              spad='pre', 
               wpad='pre',
               cpad='post',
-              split_sentences=False,
               ):
         if ids:
             self.last = (ids, labels, words, chars, w, c)
@@ -633,38 +631,11 @@ class EssayBatcher(object):
         b['y'] = y                                  # <-- THIS key ('y') SHOULD COME FROM FIELD_PARSER.fields
         
         if w and not isListEmpty(words):
-            #from keras.preprocessing import sequence; wt2 = sequence.pad_sequences(words)
-            m = (self.max_text_length,)
-            if trim_words: m = (None,)
-            if split_sentences: m = (None,) + m
-            m = (None,) + m
-            
-            p = (wpad,)
-            if split_sentences: p = (spad,) + p
-            p = (None,) + p
-            
-            #word_tensor, seq_lengths = pad_sequences_better(words, m=m, p=p)
-            
-            #######################
             word_tensor, seq_lengths = pad_sequences(words, trim_words=trim_words, max_text_length=self.max_text_length, wpad=wpad)
             b['w'] = word_tensor
             b['x'] = b['w']
         
         if c and not isListEmpty(chars):
-            m = (self.max_word_length,)
-            if trim_chars: m = (None,)
-            if trim_words: m = (None,) + m
-            else: m = (self.max_text_length,) + m
-            if split_sentences: m = (None,) + m
-            m = (None,) + m
-            
-            p = (wpad,cpad)
-            if split_sentences: p = (spad,) + p
-            p = (None,) + p
-            
-            char_tensor, seq_lengths = pad_sequences_better(chars, m=m, p=p)
-            
-            ########################
             char_tensor, seq_lengths = pad_sequences(chars, trim_words=trim_words, max_text_length=self.max_text_length, max_word_length=self.max_word_length, wpad=wpad)
             b['c'] = char_tensor
             b['x'] = b['c']
@@ -687,7 +658,6 @@ class EssayBatcher(object):
                      partial=False, 
                      trim_words=None, 
                      wpad='pre', 
-                     split_sentences=False,
                      ):
         t=None
         if min_cut<1.0:
@@ -709,21 +679,16 @@ class EssayBatcher(object):
             labels.append(d.y)
             self._word_count+=len(d.w)
             
-            dw = d.w
-            dc = d.c
-            if split_sentences:
-                dw = U.lindexsplit(d.w, d.ws)
-                dc = U.lindexsplit(d.c, d.cs)
-            words.append(dw)
-            chars.append(dc)
+            words.append(d.w)
+            chars.append(d.c)
             
             i=i+1
             if i == self.batch_size:
-                yield self.batch(ids, labels, words, chars, w, c, trim_words, wpad=wpad, split_sentences=split_sentences)
+                yield self.batch(ids, labels, words, chars, w, c, trim_words, wpad=wpad)
                 i, ids, labels, words, chars = 0,[],[],[],[]
         
         if i>0 and partial:
-            yield self.batch(ids, labels, words, chars, w, c, trim_words, wpad=wpad, split_sentences=split_sentences)
+            yield self.batch(ids, labels, words, chars, w, c, trim_words, wpad=wpad)
             
             
     def batch_stream2(self, x, y, w=True, c=False, partial=True, trim_words=None):
@@ -805,7 +770,7 @@ class EssayBatcher(object):
     
 ## reader=FieldParser
 class ResponseBatcher(object):
-    def __init__(self, reader, batch_size, max_text_length=None, max_word_length=None, trim_words=False, trim_chars=False, ystats=None, verbose=True):
+    def __init__(self, reader, batch_size, max_text_length=None, max_word_length=None, trim_words=False, trim_chars=False, ystats=None, verbose=True, normy=True):
         self.reader = reader
         self.batch_size = batch_size
         self.trim_words = trim_words
@@ -824,6 +789,7 @@ class ResponseBatcher(object):
             if verbose:
                 print('\nYSTATS (mean,std,min,max,#): {}\n'.format(ystats))
         self.ystats = ystats
+        self.normy = normy
     
     ## to interval [0,1]
     def normalize(self, y, min=None, max=None):
@@ -882,28 +848,6 @@ class ResponseBatcher(object):
             
         x = ResponseBatcher.pad(seq, shape, p, dtype=dtype, value=value)
         return x, seq_lengths
-        
-#         for i,s in enumerate(seq):
-#             if d > 2:# <-- indicates char sequence
-#                 y = (np.ones((max_text_length,) + sample_shape) * value).astype(dtype)
-#                 k = (0 if wpad=='post' else max_text_length-len(s))
-#                 for j,t in enumerate(s):
-#                     if j>= max_text_length:
-#                         break
-#                     if cpad == 'post':
-#                         y[j+k,:len(t)] = t
-#                     else:
-#                         y[j+k,-len(t):] = t
-#                 x[i,:] = y
-#             else:# <-- otherwise word sequence
-#                 s = s[:max_text_length]
-#                 if wpad == 'post':
-#                     x[i,:len(s)] = s
-#                 else:
-#                     x[i,-len(s):] = s
-        
-#         if d<3 and wpad!='post':
-#             seq_lengths = [max_text_length for i in seq_lengths]
     
     def batch(self, 
               ids=None, 
@@ -944,12 +888,12 @@ class ResponseBatcher(object):
         b['id'] = ids                              # <-- THIS key ('id') SHOULD COME FROM FIELD_PARSER.fields
                 
         y = np.array(labels, dtype=np.float32)
-        y = self.normalize(y)
+        if self.normy:
+            y = self.normalize(y)
         y = y[...,None]#y = np.expand_dims(y, 1)
         b['y'] = y                                  # <-- THIS key ('y') SHOULD COME FROM FIELD_PARSER.fields
         
         if w and not isListEmpty(words):
-            #from keras.preprocessing import sequence; wt2 = sequence.pad_sequences(words)
             m = (self.max_text_length,)
             if trim_words: m = (None,)
             if split_sentences: m = (None,) + m
@@ -960,7 +904,6 @@ class ResponseBatcher(object):
             p = (None,) + p
             
             word_tensor, seq_lengths= self.pad_sequences(words, m=m, p=p)
-            #word_tensor, seq_lengths = pad_sequences(words, trim_words=trim_words, max_text_length=self.max_text_length, wpad=wpad)
             b['w'] = word_tensor
             b['x'] = b['w']
         
@@ -977,7 +920,6 @@ class ResponseBatcher(object):
             p = (None,) + p
             
             char_tensor, seq_lengths = self.pad_sequences(chars, m=m, p=p)
-            #char_tensor, seq_lengths = pad_sequences(chars, trim_words=trim_words, max_text_length=self.max_text_length, max_word_length=self.max_word_length, wpad=wpad)
             b['c'] = char_tensor
             b['x'] = b['c']
         
@@ -998,7 +940,7 @@ class ResponseBatcher(object):
                      min_cut=1.0, 
                      partial=False, 
                      trim_words=None,
-                     spad='post',
+                     spad='pre',
                      wpad='pre',
                      cpad='post',
                      split_sentences=False,
@@ -1165,9 +1107,8 @@ def test_essay_batcher_2():
     U.seed_random(1234)
     keep_unk = False
     
-    emb_dir = '/home/david/data/embed'; emb_file = os.path.join(emb_dir, 'glove.6B.100d.txt')
+    emb_dim = 100
     emb_path = '/home/david/data/embed/glove.6B.{}d.txt'
-    
     vocab_dir = '/home/david/data/ets1b/2016'
     vocab_file = os.path.join(vocab_dir, 'vocab_n250.txt')
     
@@ -1181,7 +1122,7 @@ def test_essay_batcher_2():
         word_vocab, char_vocab, max_word_length = Vocab.load_vocab(vocab_file)
         text_parser = TextParser(word_vocab=word_vocab, char_vocab=char_vocab, keep_unk=keep_unk)
     else:
-        E, word_vocab = Vocab.load_word_embeddings_ORIG(emb_path, 100, essay_file, min_freq=5)
+        E, word_vocab = Vocab.load_word_embeddings_ORIG(emb_path, emb_dim, essay_file, min_freq=5)
         #E, word_vocab = Vocab.load_word_embeddings(emb_file, essay_file, min_freq=2)
         text_parser = TextParser(word_vocab=word_vocab, keep_unk=keep_unk)
     
@@ -1195,7 +1136,7 @@ def test_essay_batcher_2():
 ''' char and word embeddings '''
 def test_response_batcher():
     char = True
-#     char = False
+    char = False
 
     U.seed_random(1234)
     keep_unk = False
