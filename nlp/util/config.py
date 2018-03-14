@@ -1,10 +1,11 @@
 import os.path
+from pathlib2 import Path
 import configargparse
 import pprint
 import json
 
 from nlp.util.utils import mkdirs, adict
-
+from nlp.util import utils as U
 
 ## namespace->dict
 def ns2dict(args):
@@ -62,7 +63,53 @@ def parse_argv(argv=None, parser=None):
         print('\n')
     args = dict2ns(ns2dict(args)) ## convert namespace to attribute_dictionary
     #pprint.pprint(args)
-    return args     
+    return args
+
+def get_ids(fn, default=None):
+    try:
+        path = Path(fn).resolve()
+    except FileNotFoundError:
+        ids = default
+    else:
+        ids = set(U.read_col(fn, col=0, type='unicode'))
+    return ids
+
+def parse_config(config_file, parser):
+    #parser = options.get_parser()
+    argv=[]# override config file here
+    FLAGS = get_config(parser=parser, config_file=config_file, argv=argv)
+    FLAGS.chkpt_dir = U.make_abs(FLAGS.chkpt_dir)
+    FLAGS.rand_seed = U.seed_random(FLAGS.rand_seed)
+    
+    if FLAGS.att_size>0:
+        FLAGS.mean_pool = False
+        if FLAGS.att_type<0:
+            FLAGS.att_type=0
+    if FLAGS.embed_type=='word':
+        FLAGS.model_std = None
+        FLAGS.attn_std = None
+    
+    valid_ids, valid_id_file = None, None
+    if FLAGS.valid_pat is None:
+        FLAGS.save_valid = None
+        FLAGS.load_valid = None
+    else:
+        valid_id_file = os.path.join(FLAGS.id_dir, FLAGS.valid_pat).format(FLAGS.item_id)
+        if FLAGS.load_valid:
+            valid_ids = get_ids(valid_id_file)
+        if FLAGS.save_valid and valid_ids is not None:
+            FLAGS.save_valid = False
+    FLAGS.valid_ids = valid_ids
+    FLAGS.valid_id_file = valid_id_file
+    
+    train_ids = []
+    if FLAGS.train_pat:
+        train_id_file = os.path.join(FLAGS.id_dir, FLAGS.train_pat).format(FLAGS.item_id)
+        train_ids = get_ids(train_id_file, default=[])
+    FLAGS.train_ids = train_ids
+    
+    return FLAGS
+  
 
 ## demo parser...
 def get_demo_parser():

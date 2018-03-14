@@ -17,6 +17,102 @@ import re
 from timeit import default_timer as timer
 import tensorflow as tf
 
+def softmask(x, axis=-1, mask=None, T=None):
+    x_max = tf.reduce_max(x, axis=axis, keep_dims=True)
+    x = x - x_max
+    
+    if T!=None:
+#         if not tf.is_numeric_tensor(T):
+#             T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(T), dtype=tf.float32, trainable=True)
+        x = x/T
+    
+    ex = tf.exp(x)
+    
+    if mask!=None:
+        ex = tf.multiply(ex, mask)
+        
+    es = tf.reduce_sum(ex, axis=axis, keep_dims=True)
+    
+#     if mask!=None:
+#         ez = tf.cast(tf.reduce_sum(mask, axis=-1, keep_dims=True)==0, tf.float32)
+#         es = es + ez
+    ez = tf.cast(es==0, tf.float32)
+    
+    ret = ex/(es + ez)
+    
+    return ret, ex, es, ez
+
+#######################################################################
+## NESTED SEQUENCES ##
+
+from tensorflow.python.util import nest
+
+def nested_lens(x, d=0):
+    n = len(x)
+    if d == None:
+        ret = [n]
+        dd = None
+    else:
+        ret = [(n,d)]
+        dd = d+1
+    if n>0 and nest.is_sequence(x[0]):
+        ret.extend(map(lambda y: nested_lens(y,d=dd), x))
+    return ret
+
+def max_lens(x):
+    v = nest.flatten(nested_lens(x))
+    n = v[-1] + 1
+    u = [[] for _ in range(n)]
+    for i in range(int(len(v)/2)):
+        u[v[2*i+1]].append(v[2*i])
+    #return tuple(map(max,u))
+    return map(max,u)
+
+def _seq_lens(x, axis=1):
+    if axis==0: return x[0]
+    return map(lambda y: _seq_lens(y, axis-1), x[1:])
+    
+def seq_lens(x, axis=1, p=None):
+    shape = max_lens(x)
+    u = _seq_lens(nested_lens(x, d=None), axis=axis)
+    v = pad(u, shape=shape[0:axis], p=p)
+    return v
+    
+def pad(seq, shape, p=None, dtype='int32', value=0.):
+    n = len(seq)
+    d = len(shape)
+    x = (np.ones(shape) * value).astype(dtype)
+    if p==None: p=tuple([None]*n)
+    if d==1:
+        if p[0] and p[0]=='pre':
+            x[-len(seq):]= seq
+        else:
+            x[:len(seq)] = seq
+        return x
+    j = (0 if (p[0]==None or p[0]=='post') else shape[0]-n)
+    for i,s in enumerate(seq):
+        y = pad(s, shape[1:], p[1:], dtype=dtype, value=value)
+        x[i+j,:] = y
+    return x
+        
+def pad_sequences(seq, p=None, m=None, dtype='int32', value=0.):
+    shape = max_lens(seq)
+    ## necessary?? ##
+    if m:
+        ss = list(shape)
+        for i in range(len(m)):
+            if m[i]:
+                ss[i] = m[i]
+        shape = tuple(ss)
+    #################
+    seq_lengths = [seq_lens(seq, axis=i+1, p=p) for i in range(len(shape)-1)]
+    return pad(seq, shape, p=p, dtype=dtype, value=value), tuple(seq_lengths)
+
+def is_sequence(x):
+    return nest.is_sequence(x)
+#######################################################################
+## NLP / TOKENIZATION ##
+
 punc = '(),'# ?!
 word_pattern = r'([0-9]+[0-9,.]*[0-9]+|[\w]+|[{}])'.format(punc)
 
@@ -69,6 +165,11 @@ def read_col(file, col, sep="\t", header=None, type='int32'):
     df = pd.read_csv(file, sep=sep, header=header)#.sort_values(by=col)
     vals = df[df.columns[col]].values.astype(type)
     return vals
+
+def write_sequence(file, x, sep='\n'):
+    with open(file, 'w') as output_file:
+        for item in x:
+            output_file.write(str(item) + sep)
     
 class adict(dict):
     ''' Attribute dictionary - a convenience data structure, similar to SimpleNamespace in python 3.3

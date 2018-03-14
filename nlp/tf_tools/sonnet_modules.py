@@ -391,9 +391,7 @@ class DeepRNN(snt.AbstractModule):
         if self.dropout<0:
             cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=self._keep_prob)
         
-        sequence_length=None
-        if self.FLAGS.wpad=='post':
-            sequence_length=self._seq_len
+        sequence_length = self._seq_len if self.FLAGS.wpad=='post' else None
         
         output, self._final_rnn_state = tf.nn.dynamic_rnn(cell,
                                                           inputs,
@@ -533,9 +531,7 @@ class DeepBiRNN_v1(snt.AbstractModule):
         initial_states_fw = list(initial_states_fw)
         initial_states_bw = list(initial_states_bw)
         
-        sequence_length=None
-        if self.FLAGS.wpad=='post':
-            sequence_length=self._seq_len
+        sequence_length = self._seq_len if self.FLAGS.wpad=='post' else None
             
         outputs, self.output_state_fw, self.output_state_bw = tf.contrib.rnn.stack_bidirectional_dynamic_rnn(cells_fw, cells_bw, inputs,
                                                                                                              initial_states_fw=initial_states_fw,
@@ -590,22 +586,22 @@ def mellowmax(x, axis=-1, omega=0.01, mask=None):
     
     return ans
 
-def softmask(x, axis=-1, mask=None, T=None):
-    x_max = tf.reduce_max(x, axis=axis, keep_dims=True)
-    x = x - x_max
-    
-    if T!=None:
-#         if not tf.is_numeric_tensor(T):
-#             T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(T), dtype=tf.float32, trainable=True)
-        x = x/T
-    
-    ex = tf.exp(x)
-    
-    if mask!=None:
-        ex = tf.multiply(ex, mask)
-        
-    es = tf.reduce_sum(ex, axis=axis, keep_dims=True)
-    return ex/es
+# def softmask(x, axis=-1, mask=None, T=None):
+#     x_max = tf.reduce_max(x, axis=axis, keep_dims=True)
+#     x = x - x_max
+#     
+#     if T!=None:
+# #         if not tf.is_numeric_tensor(T):
+# #             T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(T), dtype=tf.float32, trainable=True)
+#         x = x/T
+#     
+#     ex = tf.exp(x)
+#     
+#     if mask!=None:
+#         ex = tf.multiply(ex, mask)
+#         
+#     es = tf.reduce_sum(ex, axis=axis, keep_dims=True)
+#     return ex/es
 
 class Linear(snt.AbstractModule):
     def __init__(self, output_dim, w_init=None, b_init=None, name="linear"):
@@ -659,46 +655,66 @@ class Attention(snt.AbstractModule):
         self.FLAGS = FLAGS
         self.final_rnn_state = final_rnn_state
     
+    ''' https://github.com/ilivans/tf-rnn-attention/blob/master/attention.py
+    '''
     def build(self, inputs):
         A = self.FLAGS.att_size
         D = inputs.shape[-1].value # D value - hidden size of the RNN layer
         mask = tf.cast(tf.abs(tf.reduce_sum(inputs, axis=2))>0, tf.float32)
- 
+        
         w_init, b_init = default_initializers(std=self.FLAGS.attn_std, bias=self.FLAGS.attn_b)
+        lin_module = Linear(output_dim=A, w_init=w_init, b_init=b_init)
+        u = tf.get_variable('u', shape=[A], initializer=w_init)
             
         ''' Linear Layer '''
-        lin_module = Linear(output_dim=A, w_init=w_init, b_init=b_init)
-        z = lin_module(inputs)
+        v = tf.tanh(lin_module(inputs))
         
-        ''' softmax '''
-        v = tf.tanh(z)
-        u = tf.get_variable('u', shape=[A], initializer=w_init)
-         
         #beta = tf.tensordot(v, u, axes=1)
         beta = tf.einsum('ijk,k->ij', v, u)
         
-        ## SOFTMAX
-        T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(1.0), dtype=tf.float32, trainable=True)
-        alpha = softmask(beta, mask=mask, T=T)
+        ''' softmax '''
+        #T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(1.0), dtype=tf.float32, trainable=True)
+        alpha = U.softmask(beta, mask=mask)
         
         ''' attn pooling '''
-        output = tf.reduce_sum(inputs * tf.expand_dims(alpha, -1), 1)
+        ##output = tf.reduce_sum(inputs * tf.expand_dims(alpha, -1), 1)
+        w = inputs * tf.expand_dims(alpha, -1)
+        #w = v * tf.expand_dims(alpha, -1)
         
-        #######
-        ps(inputs, 'inputs')
-        ps(z, 'z')
-        ps(v, 'v')
-        ps(mask, 'mask')
-        ps(beta, 'beta')
-        ps(alpha, 'alpha')
-        ps(output, 'output')
+        output = tf.reduce_sum(w, 1)
         
-        self.outputs = (mask, beta, T)
+        #############################
+        self._z = {}
+        self._z['inputs'] = inputs
+        self._z['u'] = u
+        self._z['v'] = v
+        self._z['w'] = w
+        self._z['beta'] = beta
+        self._z['alpha'] = alpha
+        self._z['output'] = output
+        self._z['mask'] = mask
+                
+#         ps(inputs, 'inputs')
+#         ps(u, 'u')
+#         ps(v, 'v')
+#         ps(w, 'w')
+#         ps(mask, 'mask')
+#         ps(beta, 'beta')
+#         ps(alpha, 'alpha')
+#         ps(output, 'output')
         
         return output
     
     def _build(self, inputs):
         return self.build(inputs)
+    
+    @property
+    def z(self):
+        self._ensure_is_connected()
+        try:
+            return self._z
+        except AttributeError:
+            return []
 
 ''' simple sonnet wrapper for aggregation'''
 class Aggregation(snt.AbstractModule):
@@ -753,18 +769,10 @@ class Aggregation(snt.AbstractModule):
             return None
         
     @property
-    def outputs(self):
+    def z(self):
         self._ensure_is_connected()
         try:
-            return self.attn_module.outputs
-        except AttributeError:
-            return []
-        
-    @property
-    def N(self):
-        self._ensure_is_connected()
-        try:
-            return self.attn_module.outputs[-2]
+            return self.attn_module.z
         except AttributeError:
             return []
 
@@ -815,9 +823,7 @@ class FlatModel(snt.AbstractModule):
         ##################################################
         RNN = DeepRNN
         if self.FLAGS.bidirectional:
-            RNN = DeepBiRNN
-            if self.FLAGS.wpad=='post':
-                RNN = DeepBiRNN_v1
+            RNN = DeepBiRNN_v1 if self.FLAGS.wpad=='post' else DeepBiRNN
             
         self._rnn_module = RNN(FLAGS=self.FLAGS)
         outputs = self._rnn_module(outputs)
@@ -871,12 +877,8 @@ class FlatModel(snt.AbstractModule):
         return self._agg_module
     
     @property
-    def attn_outputs(self):
-        return self.agg_module.outputs
-        
-    @property
-    def attn_N(self):
-        return self.agg_module.N
+    def z_attn(self):
+        return self.agg_module.z
 
 class HierarchModel(snt.AbstractModule):
     def __init__(self,
@@ -1032,10 +1034,18 @@ class HANModel(snt.AbstractModule):
         self.embed_matrix = embed_matrix
         self.max_word_length = max_word_length
         self.char_vocab = char_vocab
+        self.z_word_attn = []
+        self.z_sent_attn = []
     
     def build(self, inputs):
         self.keep_prob = tf.placeholder_with_default(1.0-abs(self.FLAGS.dropout), shape=())
-        self.seq_len = tf.placeholder(tf.int32, [self.FLAGS.batch_size])
+        #self.seq_len = tf.placeholder(tf.int32, [self.FLAGS.batch_size])
+        
+        # [document]
+        self.sentence_lengths = tf.placeholder(shape=(None,), dtype=tf.int32, name='sentence_lengths')
+        
+        # [document x sentence]
+        self.word_lengths = tf.placeholder(shape=(None, None), dtype=tf.int32, name='word_lengths')
         
         (self.document_size,
         self.sentence_size,
@@ -1056,7 +1066,8 @@ class HANModel(snt.AbstractModule):
         word_level_inputs = tf.reshape(
             inputs_embedded, 
             [self.document_size * self.sentence_size, self.word_size, self.FLAGS.embed_dim])
-        #word_level_lengths = tf.reshape(self.word_lengths, [self.document_size * self.sentence_size])
+
+        word_level_lengths = tf.reshape(self.word_lengths, [self.document_size * self.sentence_size]) if self.FLAGS.wpad=='post' else None
         
         with tf.variable_scope('word') as scope:
             
@@ -1066,7 +1077,7 @@ class HANModel(snt.AbstractModule):
             word_encoder_output, _ = mc.bidirectional_rnn(
                 self.word_cell, self.word_cell,
                 word_level_inputs, 
-                #word_level_lengths,
+                word_level_lengths,
                 scope=scope)
             
 #             rnn_module_word = RNN(FLAGS=self.FLAGS); word_encoder_output = rnn_module_word(word_level_inputs)
@@ -1074,7 +1085,9 @@ class HANModel(snt.AbstractModule):
             # attn #
             with tf.variable_scope('attention') as scope:
                 word_level_output = mc.task_specific_attention(word_encoder_output, self.FLAGS.att_size, scope=scope)
-#                 attn_word = Attention(self.FLAGS); word_level_output = attn_word(word_encoder_output)
+                if U.is_sequence(word_level_output): word_level_output, self.z_word_attn = word_level_output
+                ## or ##
+                #attn_word = Attention(self.FLAGS); word_level_output = attn_word(word_encoder_output)
             
             # dropout #
             with tf.variable_scope('dropout'):
@@ -1084,13 +1097,18 @@ class HANModel(snt.AbstractModule):
             
         ##### sentence_level #####
         
+        #dim = self.FLAGS.att_size
+        #dim = tf.shape(word_level_output)[-1]
+        dim = word_level_output.get_shape().as_list()[-1]
+
         sentence_inputs = tf.reshape(
             word_level_output,
             [self.document_size, 
              self.sentence_size, 
-             self.FLAGS.att_size
-             #-1
+             dim
              ])
+        
+        sentence_level_lengths = self.sentence_lengths if self.FLAGS.spad=='post' else None
         
         with tf.variable_scope('sentence') as scope:
             
@@ -1100,7 +1118,7 @@ class HANModel(snt.AbstractModule):
             sentence_encoder_output, _ = mc.bidirectional_rnn(
                 self.sentence_cell, self.sentence_cell,
                 sentence_inputs, 
-                #self.sentence_lengths,
+                sentence_level_lengths,
                 scope=scope)
             
 #             rnn_module_sent = RNN(FLAGS=self.FLAGS); sentence_encoder_output = rnn_module_sent(sentence_inputs)
@@ -1108,7 +1126,9 @@ class HANModel(snt.AbstractModule):
             # attn #
             with tf.variable_scope('attention') as scope:
                 sentence_level_output = mc.task_specific_attention(sentence_encoder_output, self.FLAGS.att_size, scope=scope)
-#                 attn_sent = Attention(self.FLAGS); sentence_level_output = attn_sent(sentence_encoder_output)
+                if U.is_sequence(sentence_level_output): sentence_level_output, self.z_sent_attn = sentence_level_output
+                ## or ##
+                #attn_sent = Attention(self.FLAGS); sentence_level_output = attn_sent(sentence_encoder_output)
             
             # dropout #
             with tf.variable_scope('dropout'):

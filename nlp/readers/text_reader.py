@@ -469,41 +469,6 @@ def maxlens(x):
     for i in range(int(len(v)/2)):
         u[v[2*i+1]].append(v[2*i])
     return map(max,u) 
-
-def pad_sequences_better(sequences, m=None, p=None, dtype='int32', value=0.):
-    sample_shape = maxlens(sequences)
-    if m:
-        ss = list(sample_shape)
-        for i in range(len(m)):
-            if m[i]:
-                ss[i] = m[i]
-        sample_shape = tuple(ss)
-        
-    x = (np.ones(sample_shape) * value).astype(dtype)
-    
-    for i,s in enumerate(sequences):
-        if d > 2:# <-- indicates char sequence
-            y = (np.ones((max_text_length,) + sample_shape) * value).astype(dtype)
-            k = (0 if wpad=='post' else max_text_length-len(s))
-            for j,t in enumerate(s):
-                if j>= max_text_length:
-                    break
-                if cpad == 'post':
-                    y[j+k,:len(t)] = t
-                else:
-                    y[j+k,-len(t):] = t
-            x[i,:] = y
-        else:# <-- otherwise word sequence
-            s = s[:max_text_length]
-            if wpad == 'post':
-                x[i,:len(s)] = s
-            else:
-                x[i,-len(s):] = s
-    
-#     if d<3 and wpad!='post':
-#         seq_lengths = [max_text_length for i in seq_lengths]
-        
-    return x, seq_lengths
         
 def pad_sequences(sequences, trim_words=False, max_text_length=None, max_word_length=None, dtype='int32', wpad='post', cpad='post', value=0.):
     num_samples = len(sequences)
@@ -813,21 +778,21 @@ class ResponseBatcher(object):
         return wc
 
     @staticmethod
-    def pad(seq, shape, p, dtype='int32', value=0.):
+    def nested_pad(seq, shape, p, dtype='int32', value=0.):
         n = len(seq)
         d = len(shape)
         x = (np.ones(shape) * value).astype(dtype)
         
         if d==1:
             if p[0] and p[0]=='pre':
-                x[-len(seq):]==seq
+                x[-len(seq):]= seq
             else:
                 x[:len(seq)] = seq
             return x
         
         j = (0 if (p[0]==None or p[0]=='post') else shape[0]-n)
         for i,s in enumerate(seq):
-            y = ResponseBatcher.pad(s, shape[1:], p[1:], dtype=dtype, value=value)
+            y = ResponseBatcher.nested_pad(s, shape[1:], p[1:], dtype=dtype, value=value)
             x[i+j,:] = y
         
         return x
@@ -846,7 +811,7 @@ class ResponseBatcher(object):
         if not p:
             p = tuple([None]*n)
             
-        x = ResponseBatcher.pad(seq, shape, p, dtype=dtype, value=value)
+        x = ResponseBatcher.nested_pad(seq, shape, p, dtype=dtype, value=value)
         return x, seq_lengths
     
     def batch(self, 
@@ -903,7 +868,9 @@ class ResponseBatcher(object):
             if split_sentences: p = (spad,) + p
             p = (None,) + p
             
-            word_tensor, seq_lengths= self.pad_sequences(words, m=m, p=p)
+            #word_tensor, seq_lengths= self.pad_sequences(words, m=m, p=p)
+            word_tensor, seq_lengths= U.pad_sequences(words, m=m, p=p)
+            
             b['w'] = word_tensor
             b['x'] = b['w']
         
@@ -919,7 +886,9 @@ class ResponseBatcher(object):
             if split_sentences: p = (spad,) + p
             p = (None,) + p
             
-            char_tensor, seq_lengths = self.pad_sequences(chars, m=m, p=p)
+            #char_tensor, seq_lengths = self.pad_sequences(chars, m=m, p=p)
+            char_tensor, seq_lengths = U.pad_sequences(chars, m=m, p=p)
+            
             b['c'] = char_tensor
             b['x'] = b['c']
         
@@ -980,7 +949,6 @@ class ResponseBatcher(object):
         
         if i>0 and partial:
             yield self.batch(ids, labels, words, chars, w, c, trim_words, spad=spad, wpad=wpad, cpad=cpad, split_sentences=split_sentences)
-            
             
 
 def first_nonzero(a):
@@ -1148,11 +1116,11 @@ def test_response_batcher():
     vocab_file = os.path.join(vocab_dir, 'vocab_n250.txt')
     
     data_dir = '/home/david/data/ats/ets'
-    id = 55399; 
-    #essay_file = os.path.join(data_dir, '{0}/text.txt').format(id)
-    essay_file = os.path.join(data_dir, '{0}/{0}.txt').format(id)
+    id = 56375; 
+    essay_file = os.path.join(data_dir, '{0}/text.txt').format(id)
+#     essay_file = os.path.join(data_dir, '{0}/{0}.txt').format(id)
     
-    reader =  GlobReader(essay_file, chunk_size=1000, regex=REGEX_NUM, shuf=True)
+    reader =  GlobReader(essay_file, chunk_size=1000, regex=REGEX_NUM, shuf=False)
     
     if char:
         word_vocab, char_vocab, max_word_length = Vocab.load_vocab(vocab_file)
@@ -1167,7 +1135,11 @@ def test_response_batcher():
     
     tot_vol = 0
     batcher = ResponseBatcher(reader=field_parser, batch_size=64, trim_words=True)
-    for b in batcher.batch_stream(stop=True, split_sentences=True):
+    for b in batcher.batch_stream(stop=True,
+                                  split_sentences=True,
+                                  spad='post',
+                                  wpad='post',
+                                  ):
         vol = np.prod(b.x.shape); tot_vol+=vol
         print('{}\t{}\t{}'.format(vol, b.x.shape, b.y.shape))
     print('tot_vol:\t{}'.format(tot_vol))
