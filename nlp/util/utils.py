@@ -33,14 +33,11 @@ def softmask(x, axis=-1, mask=None, T=None):
         
     es = tf.reduce_sum(ex, axis=axis, keep_dims=True)
     
-#     if mask!=None:
-#         ez = tf.cast(tf.reduce_sum(mask, axis=-1, keep_dims=True)==0, tf.float32)
-#         es = es + ez
-    ez = tf.cast(es==0, tf.float32)
+    ez = tf.cast( tf.equal( es, tf.constant( 0, dtype=tf.float32 ) ), tf.float32)
+    es = es + ez
+    ret = ex/es
     
-    ret = ex/(es + ez)
-    
-    return ret, ex, es, ez
+    return ret#, ex, es, ez
 
 #######################################################################
 ## NESTED SEQUENCES ##

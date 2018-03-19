@@ -10,6 +10,8 @@ import numpy as np
 import tensorflow as tf
 import sonnet as snt
 
+import nlp.tf_tools.model_components as mc
+
 from nlp.util import utils as U
 from nlp.util.utils import ps
 
@@ -30,6 +32,8 @@ from nlp.rhn.rhn import RHNCell2 as RHNCell
 from nlp.rnn_cells.lru import LRUCell
 
 from nlp.hyper.tf_layer_norm import HyperLnLSTMCell
+from tensorflow.python.framework.tensor_shape import TensorShape
+
 
 '''
 https://github.com/deepmind/sonnet/blob/master/sonnet/examples/rnn_shakespeare.py
@@ -296,37 +300,41 @@ def rnn_unit(args):
                   }
     return rnn, kwargs
 
-def get_initial_state(cell, args):
+def get_initial_state(cell, args, batch_size=None):
+    if batch_size==None:
+        batch_size = tf.shape(args.inputs)[0]
+    
     if args.train_initial_state:
         if args.unit.startswith('snt'):
-            return cell.initial_state(args.batch_size, tf.float32, trainable=True)
+            return cell.initial_state(batch_size, tf.float32, trainable=True)
         print('TRAINABLE INITIAL STATE NOT YET IMPLEMENTED FOR: {} !!!'.format(args.unit))
 #         else:
 #             initializer = r2rt.make_variable_state_initializer()
 #             return r2rt.get_initial_cell_state(cell, initializer, args.batch_size, tf.float32)
-    return cell.zero_state(args.batch_size, tf.float32)
+    return cell.zero_state(batch_size, tf.float32)
 
-def create_rnn_cell(args, scope=None):
+def create_rnn_cell(args, scope=None, dropout=True, batch_size=None):
     rnn, kwargs = rnn_unit(args)
     
     if scope!=None:
         with tf.variable_scope(scope):
             cell = rnn(args.rnn_size, **kwargs)
-            initial_state = get_initial_state(cell, args)
+            initial_state = get_initial_state(cell, args, batch_size=batch_size)
     else:
         cell = rnn(args.rnn_size, **kwargs)
-        initial_state = get_initial_state(cell, args)
+        initial_state = get_initial_state(cell, args, batch_size=batch_size)
     
     #cell = tf.contrib.rnn.ResidualWrapper(cell)
     #cell = tf.contrib.rnn.HighwayWrapper(cell)
     #cell = tf.contrib.rnn.AttentionCellWrapper(cell, attn_length=10, attn_size=100)
     
-    if abs(args.dropout)>0:
+    if dropout and abs(args.dropout)>0:
         if args.dropout<0:
             cell = tf.contrib.rnn.DropoutWrapper(cell, input_keep_prob=args._keep_prob)
         else:
             cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=args._keep_prob)
-
+        
+        ''' variational_recurrent '''
         #variational_recurrent=True
         
     return cell, initial_state
@@ -359,6 +367,7 @@ class DeepRNN(snt.AbstractModule):
                  seq_len=None,
                  keep_prob=None,
                  forget_bias=0.,
+                 pad='post',
                  name="deep_rnn"):
         super(DeepRNN, self).__init__(name=name)
         self.FLAGS = FLAGS
@@ -371,15 +380,18 @@ class DeepRNN(snt.AbstractModule):
         self._seq_len = seq_len
         self._keep_prob = keep_prob
         self.forget_bias = forget_bias
+        self.pad = pad
         self.name = name
         
         with self._enter_variable_scope():
             if keep_prob is None:
-                self._keep_prob = tf.placeholder_with_default(1.0-abs(self.dropout), shape=())
+                self._keep_prob = tf.placeholder_with_default(1.0-abs(self.FLAGS.dropout), shape=())
             if seq_len is None:
-                self._seq_len = tf.placeholder(tf.int32, [self.batch_size])
+                self._seq_len = tf.placeholder(tf.int32, [None])# [self.batch_size]
 
     def _build(self, inputs):
+        self.inputs = inputs#self.batch_size = tf.shape(inputs)[0]
+        
         if self.num_layers > 1:
             cells = [create_rnn_cell(self, scope='layer{}'.format(i)) for i in range(self.num_layers)]
             cells, states = zip(*cells)
@@ -391,7 +403,7 @@ class DeepRNN(snt.AbstractModule):
         if self.dropout<0:
             cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=self._keep_prob)
         
-        sequence_length = self._seq_len if self.FLAGS.wpad=='post' else None
+        sequence_length = self._seq_len if self.pad=='post' else None
         
         output, self._final_rnn_state = tf.nn.dynamic_rnn(cell,
                                                           inputs,
@@ -439,6 +451,7 @@ class DeepBiRNN(snt.AbstractModule):
                  seq_len=None,
                  keep_prob=None,
                  forget_bias=0.,
+                 pad='post',
                  name="deep_bi_rnn"):
         super(DeepBiRNN, self).__init__(name=name)
         self.FLAGS = FLAGS
@@ -449,21 +462,24 @@ class DeepBiRNN(snt.AbstractModule):
         self.train_initial_state = FLAGS.train_initial_state
         self.unit = FLAGS.rnn_unit
         self._seq_len = seq_len
+        self._keep_prob = keep_prob
         self.forget_bias = forget_bias
+        self.pad = pad
         self.name = name
-        
         
         with self._enter_variable_scope():
             if keep_prob is None:
-                self._keep_prob = tf.placeholder_with_default(1.0, shape=())
+                self._keep_prob = tf.placeholder_with_default(1.0-abs(self.FLAGS.dropout), shape=())
             if seq_len is None:
-                self._seq_len = tf.placeholder(tf.int32, [self.batch_size])
+                self._seq_len = tf.placeholder(tf.int32, [None])# [self.batch_size]
 
     def _build(self, inputs):
+        self.inputs = inputs
+        
         with tf.variable_scope('fwd'):
-            self.fwd_rnn = DeepRNN(FLAGS=self.FLAGS, keep_prob=self._keep_prob)
+            self.fwd_rnn = DeepRNN(FLAGS=self.FLAGS, seq_len=self._seq_len, keep_prob=self._keep_prob, pad=self.pad)
         with tf.variable_scope('bwd'):
-            self.bwd_rnn = DeepRNN(FLAGS=self.FLAGS, keep_prob=self._keep_prob)
+            self.bwd_rnn = DeepRNN(FLAGS=self.FLAGS, seq_len=self._seq_len, keep_prob=self._keep_prob, pad=self.pad)
             
         fwd_outputs = self.fwd_rnn(inputs)
         bwd_outputs = self.bwd_rnn(padded_reverse(inputs, self._seq_len))
@@ -497,6 +513,7 @@ class DeepBiRNN_v1(snt.AbstractModule):
                  seq_len=None,
                  keep_prob=None,
                  forget_bias=0.,
+                 pad='post',
                  name="deep_bi_rnn_v1"):
         super(DeepBiRNN_v1, self).__init__(name=name)
         self.FLAGS = FLAGS
@@ -507,17 +524,20 @@ class DeepBiRNN_v1(snt.AbstractModule):
         self.train_initial_state = FLAGS.train_initial_state
         self.unit = FLAGS.rnn_unit
         self._seq_len = seq_len
+        self._keep_prob = keep_prob
         self.forget_bias = forget_bias
+        self.pad = pad
         self.name = name
-        
         
         with self._enter_variable_scope():
             if keep_prob is None:
-                self._keep_prob = tf.placeholder_with_default(1.0, shape=())
+                self._keep_prob = tf.placeholder_with_default(1.0-abs(self.FLAGS.dropout), shape=())
             if seq_len is None:
                 self._seq_len = tf.placeholder(tf.int32, [self.batch_size])
 
     def _build(self, inputs):
+        self.inputs = inputs
+        
         with tf.variable_scope('fwd'):
             cells_fw = [create_rnn_cell(self, scope='layer{}'.format(i)) for i in range(self.num_layers)]
         with tf.variable_scope('bwd'):
@@ -531,7 +551,7 @@ class DeepBiRNN_v1(snt.AbstractModule):
         initial_states_fw = list(initial_states_fw)
         initial_states_bw = list(initial_states_bw)
         
-        sequence_length = self._seq_len if self.FLAGS.wpad=='post' else None
+        sequence_length = self._seq_len if self.pad=='post' else None
             
         outputs, self.output_state_fw, self.output_state_bw = tf.contrib.rnn.stack_bidirectional_dynamic_rnn(cells_fw, cells_bw, inputs,
                                                                                                              initial_states_fw=initial_states_fw,
@@ -585,23 +605,6 @@ def mellowmax(x, axis=-1, omega=0.01, mask=None):
     ans = (tf.log(tf.reduce_sum(ex, axis=axis, keep_dims=True)) - tf.log(n)) / omega
     
     return ans
-
-# def softmask(x, axis=-1, mask=None, T=None):
-#     x_max = tf.reduce_max(x, axis=axis, keep_dims=True)
-#     x = x - x_max
-#     
-#     if T!=None:
-# #         if not tf.is_numeric_tensor(T):
-# #             T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(T), dtype=tf.float32, trainable=True)
-#         x = x/T
-#     
-#     ex = tf.exp(x)
-#     
-#     if mask!=None:
-#         ex = tf.multiply(ex, mask)
-#         
-#     es = tf.reduce_sum(ex, axis=axis, keep_dims=True)
-#     return ex/es
 
 class Linear(snt.AbstractModule):
     def __init__(self, output_dim, w_init=None, b_init=None, name="linear"):
@@ -674,7 +677,7 @@ class Attention(snt.AbstractModule):
         
         ''' softmax '''
         #T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(1.0), dtype=tf.float32, trainable=True)
-        alpha = U.softmask(beta, mask=mask)
+        alpha = mc.softmask(beta, mask=mask)
         
         ''' attn pooling '''
         ##output = tf.reduce_sum(inputs * tf.expand_dims(alpha, -1), 1)
@@ -685,14 +688,14 @@ class Attention(snt.AbstractModule):
         
         #############################
         self._z = {}
-        self._z['inputs'] = inputs
-        self._z['u'] = u
-        self._z['v'] = v
-        self._z['w'] = w
-        self._z['beta'] = beta
-        self._z['alpha'] = alpha
-        self._z['output'] = output
-        self._z['mask'] = mask
+#         self._z['inputs'] = inputs
+#         self._z['u'] = u
+#         self._z['v'] = v
+#         self._z['w'] = w
+#         self._z['beta'] = beta
+#         self._z['alpha'] = alpha
+#         self._z['output'] = output
+#         self._z['mask'] = mask
                 
 #         ps(inputs, 'inputs')
 #         ps(u, 'u')
@@ -821,11 +824,8 @@ class FlatModel(snt.AbstractModule):
             outputs = reshape_module(outputs)
             
         ##################################################
-        RNN = DeepRNN
-        if self.FLAGS.bidirectional:
-            RNN = DeepBiRNN_v1 if self.FLAGS.wpad=='post' else DeepBiRNN
-            
-        self._rnn_module = RNN(FLAGS=self.FLAGS)
+        rnn_word = (DeepBiRNN_v1 if self.FLAGS.wpad=='post' else DeepBiRNN) if self.FLAGS.bidirectional else DeepRNN
+        self._rnn_module = rnn_word(FLAGS=self.FLAGS, pad=self.FLAGS.wpad)
         outputs = self._rnn_module(outputs)
         
         ##################################################
@@ -1036,6 +1036,12 @@ class HANModel(snt.AbstractModule):
         self.char_vocab = char_vocab
         self.z_word_attn = []
         self.z_sent_attn = []
+        #######
+        self.rnn_size = FLAGS.rnn_dim
+        self.unit = FLAGS.rnn_unit
+        self.forget_bias = FLAGS.forget_bias
+        self.train_initial_state = FLAGS.train_initial_state
+        
     
     def build(self, inputs):
         self.keep_prob = tf.placeholder_with_default(1.0-abs(self.FLAGS.dropout), shape=())
@@ -1059,35 +1065,43 @@ class HANModel(snt.AbstractModule):
         CELL = tf.nn.rnn_cell.GRUCell
         #CELL = tf.nn.rnn_cell.BasicLSTMCell
         
-        RNN = DeepBiRNN if self.FLAGS.bidirectional else DeepRNN
-        
         ##### word_level #####
         
         word_level_inputs = tf.reshape(
             inputs_embedded, 
             [self.document_size * self.sentence_size, self.word_size, self.FLAGS.embed_dim])
 
-        word_level_lengths = tf.reshape(self.word_lengths, [self.document_size * self.sentence_size]) if self.FLAGS.wpad=='post' else None
+        word_level_lengths = tf.reshape(self.word_lengths, [self.document_size * self.sentence_size])
         
         with tf.variable_scope('word') as scope:
             
             # rnn #
             
-            self.word_cell = CELL(self.FLAGS.rnn_dim)
-            word_encoder_output, _ = mc.bidirectional_rnn(
-                self.word_cell, self.word_cell,
-                word_level_inputs, 
-                word_level_lengths,
-                scope=scope)
+            if self.FLAGS.rnn_new:                
+                #word_cell = CELL(self.FLAGS.rnn_dim)
+                word_cell, _ = create_rnn_cell(self, scope=scope, dropout=False, batch_size=tf.shape(word_level_inputs)[0])
+                
+                word_encoder_output, _ = mc.bidirectional_rnn(
+                    word_cell, word_cell,
+                    word_level_inputs, 
+                    word_level_lengths if self.FLAGS.wpad=='post' else None,
+                    scope=scope)
             
-#             rnn_module_word = RNN(FLAGS=self.FLAGS); word_encoder_output = rnn_module_word(word_level_inputs)
+            else:
+                rnn_word = (DeepBiRNN_v1 if self.FLAGS.wpad=='post' else DeepBiRNN) if self.FLAGS.bidirectional else DeepRNN
+                rnn_module_word = rnn_word(FLAGS=self.FLAGS,
+                                           seq_len=word_level_lengths,
+                                           keep_prob=self.keep_prob,
+                                           pad=self.FLAGS.wpad)
+                word_encoder_output = rnn_module_word(word_level_inputs)
+            
             
             # attn #
             with tf.variable_scope('attention') as scope:
                 word_level_output = mc.task_specific_attention(word_encoder_output, self.FLAGS.att_size, scope=scope)
                 if U.is_sequence(word_level_output): word_level_output, self.z_word_attn = word_level_output
                 ## or ##
-                #attn_word = Attention(self.FLAGS); word_level_output = attn_word(word_encoder_output)
+#                 attn_word = Attention(self.FLAGS); word_level_output = attn_word(word_encoder_output)
             
             # dropout #
             with tf.variable_scope('dropout'):
@@ -1099,7 +1113,9 @@ class HANModel(snt.AbstractModule):
         
         #dim = self.FLAGS.att_size
         #dim = tf.shape(word_level_output)[-1]
-        dim = word_level_output.get_shape().as_list()[-1]
+        #dim = word_level_output.get_shape().as_list()[-1]
+        #dim = word_level_output.get_shape()[-1]
+        dim = self.FLAGS.rnn_dim * (2 if self.FLAGS.bidirectional else 1)
 
         sentence_inputs = tf.reshape(
             word_level_output,
@@ -1108,27 +1124,36 @@ class HANModel(snt.AbstractModule):
              dim
              ])
         
-        sentence_level_lengths = self.sentence_lengths if self.FLAGS.spad=='post' else None
+        sentence_level_lengths = self.sentence_lengths
         
         with tf.variable_scope('sentence') as scope:
             
             # rnn #
             
-            self.sentence_cell = CELL(self.FLAGS.rnn_dim)
-            sentence_encoder_output, _ = mc.bidirectional_rnn(
-                self.sentence_cell, self.sentence_cell,
-                sentence_inputs, 
-                sentence_level_lengths,
-                scope=scope)
+            if self.FLAGS.rnn_new:
+                #sentence_cell = CELL(self.FLAGS.rnn_dim)
+                sentence_cell, _ = create_rnn_cell(self, scope=scope, dropout=False, batch_size=tf.shape(sentence_inputs)[0])
+                
+                sentence_encoder_output, _ = mc.bidirectional_rnn(
+                    sentence_cell, sentence_cell,
+                    sentence_inputs, 
+                    sentence_level_lengths if self.FLAGS.spad=='post' else None,
+                    scope=scope)
             
-#             rnn_module_sent = RNN(FLAGS=self.FLAGS); sentence_encoder_output = rnn_module_sent(sentence_inputs)
+            else:
+                rnn_sent = (DeepBiRNN_v1 if self.FLAGS.spad=='post' else DeepBiRNN) if self.FLAGS.bidirectional else DeepRNN
+                rnn_module_sent = rnn_sent(FLAGS=self.FLAGS,
+                                           seq_len=sentence_level_lengths,
+                                           keep_prob=self.keep_prob,
+                                           pad=self.FLAGS.spad)
+                sentence_encoder_output = rnn_module_sent(sentence_inputs)
             
             # attn #
             with tf.variable_scope('attention') as scope:
                 sentence_level_output = mc.task_specific_attention(sentence_encoder_output, self.FLAGS.att_size, scope=scope)
                 if U.is_sequence(sentence_level_output): sentence_level_output, self.z_sent_attn = sentence_level_output
                 ## or ##
-                #attn_sent = Attention(self.FLAGS); sentence_level_output = attn_sent(sentence_encoder_output)
+#                 attn_sent = Attention(self.FLAGS); sentence_level_output = attn_sent(sentence_encoder_output)
             
             # dropout #
             with tf.variable_scope('dropout'):
@@ -1141,6 +1166,9 @@ class HANModel(snt.AbstractModule):
   
         w_init, b_init = default_initializers(std=self.FLAGS.model_std, bias=self.FLAGS.model_b)
         lin_module = snt.Linear(output_size=1, initializers={ 'w':w_init, 'b':b_init })
+        
+        sentence_level_output.set_shape(tf.TensorShape([self.FLAGS.batch_size, dim]))
+        
         outputs = lin_module(sentence_level_output)
         ##################################################
         

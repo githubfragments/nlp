@@ -1,4 +1,5 @@
 import tensorflow as tf
+import numpy as np
 import tensorflow.contrib.layers as layers
 from nlp.util import utils as U
 
@@ -8,7 +9,8 @@ except ImportError:
     LSTMStateTuple = tf.nn.rnn_cell.LSTMStateTuple
 
 
-def bidirectional_rnn(cell_fw, cell_bw, inputs_embedded, 
+def bidirectional_rnn(cell_fw, cell_bw, 
+                      inputs_embedded, 
                       input_lengths=None,
                       scope=None):
     """Bidirecional RNN with concatenated outputs and states"""
@@ -111,31 +113,82 @@ def task_specific_attention(inputs, output_size,
                                                   activation_fn=activation_fn,
                                                   scope=scope)
 
-        ''' orig '''
+        ''' softmax '''
+        ## original (softmax) ##
 #         vector_attn = tf.reduce_sum(tf.multiply(input_projection, attention_context_vector), axis=2, keep_dims=True)
 #         attention_weights = tf.nn.softmax(vector_attn, dim=1)
 
-        ''' softmask '''
+        ## softmask ##
         vector_attn = tf.reduce_sum(tf.multiply(input_projection, attention_context_vector), axis=2)
-        mask = tf.cast(tf.abs(tf.reduce_sum(inputs, axis=2))>0, tf.float32); z['mask'] = mask
+        mask = tf.cast(tf.abs(tf.reduce_sum(input_projection, axis=2))>0, tf.float32)
+        
         attention_weights = softmask(vector_attn, mask=mask)
+        attention_weights = tf.expand_dims(attention_weights, -1)
         #if U.is_sequence(attention_weights):
         #attention_weights, ex, es, ez = attention_weights
         #z['ex']=ex; z['es']=es; z['ez']=ez 
-        attention_weights = tf.expand_dims(attention_weights, -1)
         
-        ''' ???? '''
-        ## original
-        #weighted_projection = tf.multiply(input_projection, attention_weights); z['weighted_projection'] = weighted_projection
-        #outputs = tf.reduce_sum(tf.multiply(input_projection, attention_weights), axis=1)
-        ## dsv
-        outputs = tf.reduce_sum(tf.multiply(inputs, attention_weights), axis=1)
+        ''' weighted mean '''
+        #outputs = tf.reduce_sum(tf.multiply(inputs, attention_weights), axis=1)
         
+        
+        ##### TESTING ###########################
+        #idx = tf.cast( tf.not_equal( tf.reduce_sum(mask, axis=-1), tf.constant( 0, dtype=tf.float32 ) ), tf.float32)
+        bool_idx =  tf.not_equal( tf.reduce_sum(mask, axis=-1), tf.constant( 0, dtype=tf.float32 ))
+        sps_idx = tf.cast( tf.where(bool_idx), tf.int32 )
+        
+        input_sps = tf.boolean_mask(inputs, bool_idx)
+        attn_sps = tf.boolean_mask(attention_weights, bool_idx)
+        output_sps = tf.reduce_sum(tf.multiply(input_sps, attn_sps), axis=1)
+        
+        z['bool_idx'] = bool_idx
+        z['sps_idx'] = sps_idx
+        z['input_sps'] = input_sps
+        z['attn_sps'] = attn_sps
+        z['output_sps'] = output_sps
+        
+        #output_shape = [tf.shape(inputs)[0], tf.shape(inputs)[-1]]
+        #output_shape = [inputs.get_shape()[0], inputs.get_shape()[-1]]
+        
+        #input_shape = inputs.get_shape()
+        input_shape = tf.shape(inputs)
+        output_shape = tf.boolean_mask(input_shape, np.array([True, False, True]))
+        
+        z['input_shape'] = input_shape
+        z['output_shape'] = output_shape
+        
+        outputs = tf.scatter_nd(indices=sps_idx,
+                                updates=output_sps,
+                                shape=output_shape)
+        
+        ### TEST #########################
+        #output_shape = [tf.shape(inputs)[0], tf.shape(inputs)[-1]]
+        #output_shape = [inputs.get_shape()[0], inputs.get_shape()[-1]]
+        
+        #init = tf.placeholder(tf.float32, shape=(2,))
+        #out_var = tf.Variable(init, validate_shape=False)
+        
+        #zeros = tf.fill(dims=output_shape, value=0.0)
+        #out_var = tf.Variable(zeros, validate_shape=False)
+        
+        #zeros = tf.fill(dims=output_shape, value=0.0)
+        #out_var.assign(zeros)
+        #op = tf.assign(out_var, zeros, validate_shape=False)
+        
+        #out_var = tf.get_variable('out_var', shape=output_shape, dtype=tf.float32, trainable=False)
+        
+        ## DEBUG ###############################################
+        #z['out_var'] = out_var
+        #z['zeros'] = zeros
+        #z['op'] = op
+        
+        z['mask'] = mask
         z['inputs'] = inputs
         z['attention_context_vector'] = attention_context_vector
         z['input_projection'] = input_projection
         z['vector_attn'] = vector_attn
         z['attention_weights'] = attention_weights
         z['outputs'] = outputs
-
+        
+        ##
         return outputs, z

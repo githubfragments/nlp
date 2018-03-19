@@ -67,11 +67,9 @@ def parse_argv(argv=None, parser=None):
 
 def get_ids(fn, default=None):
     try:
-        path = Path(fn).resolve()
-    except FileNotFoundError:
-        ids = default
-    else:
         ids = set(U.read_col(fn, col=0, type='unicode'))
+    except IOError:
+        ids = default
     return ids
 
 def parse_config(config_file, parser):
