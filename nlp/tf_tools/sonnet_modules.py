@@ -31,6 +31,8 @@ from nlp.rhn.rhn import RHNCell2 as RHNCell
 
 from nlp.rnn_cells.lru import LRUCell
 
+from nlp.rnn_cells.MultiplicativeLSTM import MultiplicativeLSTMCell
+
 from nlp.hyper.tf_layer_norm import HyperLnLSTMCell
 from tensorflow.python.framework.tensor_shape import TensorShape
 
@@ -298,6 +300,9 @@ def rnn_unit(args):
                   'hyper_num_units':128,
                   'hyper_embedding_size':32,
                   }
+    elif args.unit=='mlstm':
+        rnn = MultiplicativeLSTMCell
+        kwargs = { 'forget_bias':args.forget_bias }
     return rnn, kwargs
 
 def get_initial_state(cell, args, batch_size=None):
@@ -439,10 +444,10 @@ class DeepRNN(snt.AbstractModule):
 
 ###############################################################################
 
-def padded_reverse(x, seq_len, batch_dim=0, seq_dim=1):
-    x = tf.reverse(x,[seq_dim])
+def padded_reverse(x, seq_len, batch_dim=0, seq_dim=1, pad='post'):
+    if pad=='pre': x = tf.reverse(x,[seq_dim])
     x = tf.reverse_sequence(x, seq_len, batch_dim=batch_dim, seq_dim=seq_dim)
-    x = tf.reverse(x,[seq_dim])
+    if pad=='pre': x = tf.reverse(x,[seq_dim])
     return x
 
 class DeepBiRNN(snt.AbstractModule):
@@ -482,9 +487,9 @@ class DeepBiRNN(snt.AbstractModule):
             self.bwd_rnn = DeepRNN(FLAGS=self.FLAGS, seq_len=self._seq_len, keep_prob=self._keep_prob, pad=self.pad)
             
         fwd_outputs = self.fwd_rnn(inputs)
-        bwd_outputs = self.bwd_rnn(padded_reverse(inputs, self._seq_len))
+        bwd_outputs = self.bwd_rnn(padded_reverse(inputs, self._seq_len, pad=self.pad))
         
-        outputs = tf.concat([fwd_outputs, bwd_outputs], axis=1)
+        outputs = tf.concat([fwd_outputs, bwd_outputs], axis=2)
         
         return outputs
     
@@ -1015,7 +1020,8 @@ class HierarchModel(snt.AbstractModule):
 
 
 ######################################################################################
-
+''' https://github.com/davidsvaughn/hierarchical-attention-networks/blob/master/HAN_model.py
+'''
 import tensorflow.contrib.layers as layers
 import nlp.tf_tools.model_components as mc
 # from model_components import task_specific_attention, bidirectional_rnn
@@ -1036,6 +1042,7 @@ class HANModel(snt.AbstractModule):
         self.char_vocab = char_vocab
         self.z_word_attn = []
         self.z_sent_attn = []
+        self.z = {}
         #######
         self.rnn_size = FLAGS.rnn_dim
         self.unit = FLAGS.rnn_unit
@@ -1057,6 +1064,8 @@ class HANModel(snt.AbstractModule):
         self.sentence_size,
         self.word_size) = tf.unstack(tf.shape(inputs))
         
+        self.z['inputs_shape'] = tf.shape(inputs)
+        
         ## word embed ##
         word_embed_module = snt.Embed(existing_vocab=self.embed_matrix, trainable=True)
         inputs_embedded = word_embed_module(inputs)
@@ -1067,11 +1076,25 @@ class HANModel(snt.AbstractModule):
         
         ##### word_level #####
         
+        word_bs = self.document_size * self.sentence_size
+        
         word_level_inputs = tf.reshape(
             inputs_embedded, 
-            [self.document_size * self.sentence_size, self.word_size, self.FLAGS.embed_dim])
+            [word_bs, self.word_size, self.FLAGS.embed_dim])
 
-        word_level_lengths = tf.reshape(self.word_lengths, [self.document_size * self.sentence_size])
+        word_level_lengths = tf.reshape(self.word_lengths, [word_bs])
+        
+        ##################
+        
+        if self.FLAGS.sparse_words:
+            sps_idx = tf.where(word_level_lengths>0)
+            word_level_inputs = tf.gather_nd(word_level_inputs, sps_idx)
+            word_level_lengths = tf.gather_nd(word_level_lengths, sps_idx)
+    #         self.z['sps_idx'] = sps_idx
+    #         self.z['word_level_inputs'] = word_level_inputs
+    #         self.z['word_level_lengths'] = word_level_lengths
+        
+        #### GATHER_ND ##########################
         
         with tf.variable_scope('word') as scope:
             
@@ -1084,17 +1107,20 @@ class HANModel(snt.AbstractModule):
                 word_encoder_output, _ = mc.bidirectional_rnn(
                     word_cell, word_cell,
                     word_level_inputs, 
-                    word_level_lengths if self.FLAGS.wpad=='post' else None,
+                    word_level_lengths,
+                    pad=self.FLAGS.wpad,
                     scope=scope)
             
             else:
-                rnn_word = (DeepBiRNN_v1 if self.FLAGS.wpad=='post' else DeepBiRNN) if self.FLAGS.bidirectional else DeepRNN
+                #rnn_word = (DeepBiRNN_v1 if self.FLAGS.wpad=='post' else DeepBiRNN) if self.FLAGS.bidirectional else DeepRNN
+                rnn_word = DeepBiRNN if self.FLAGS.bidirectional else DeepRNN
                 rnn_module_word = rnn_word(FLAGS=self.FLAGS,
                                            seq_len=word_level_lengths,
                                            keep_prob=self.keep_prob,
                                            pad=self.FLAGS.wpad)
                 word_encoder_output = rnn_module_word(word_level_inputs)
-            
+                
+            self.z['word_encoder_output_shape'] = tf.shape(word_encoder_output)
             
             # attn #
             with tf.variable_scope('attention') as scope:
@@ -1108,23 +1134,34 @@ class HANModel(snt.AbstractModule):
                 word_level_output = layers.dropout(
                     word_level_output, 
                     keep_prob=self.keep_prob)
-            
-        ##### sentence_level #####
         
-        #dim = self.FLAGS.att_size
-        #dim = tf.shape(word_level_output)[-1]
-        #dim = word_level_output.get_shape().as_list()[-1]
-        #dim = word_level_output.get_shape()[-1]
-        dim = self.FLAGS.rnn_dim * (2 if self.FLAGS.bidirectional else 1)
+        #### SCATTER_ND #########################
+        
+        if self.FLAGS.sparse_words:
+            output_shape = tf.cast( [ word_bs, tf.shape(word_level_output)[-1]] , tf.int64 )
+            word_level_output = tf.scatter_nd(indices=sps_idx,
+                                              updates=word_level_output,
+                                              shape=output_shape)
+#             self.z['output_shape'] = output_shape
+#             self.z['word_output'] = word_output
+#             self.z['word_level_output'] = word_level_output
 
-        sentence_inputs = tf.reshape(
-            word_level_output,
-            [self.document_size, 
-             self.sentence_size, 
-             dim
-             ])
+            ###########################
+            #dim = tf.shape(word_level_output)[-1]
+            #dim = word_level_output.get_shape().as_list() [-1]
+            dim = self.FLAGS.rnn_dim * (2 if self.FLAGS.bidirectional else 1)
+        else:
+            dim = word_level_output.get_shape().as_list() [-1]
         
+        self.z['dim'] = tf.cast( dim , tf.int32 )
+        
+        ##### sentence_level ##########################################################
+        
+        sentence_inputs_shape = tf.cast( [self.document_size, self.sentence_size, dim] , tf.int32 )
+        sentence_inputs = tf.reshape( word_level_output, shape=sentence_inputs_shape )
         sentence_level_lengths = self.sentence_lengths
+        
+        self.z['sentence_inputs_shape'] = sentence_inputs_shape
         
         with tf.variable_scope('sentence') as scope:
             
@@ -1137,11 +1174,13 @@ class HANModel(snt.AbstractModule):
                 sentence_encoder_output, _ = mc.bidirectional_rnn(
                     sentence_cell, sentence_cell,
                     sentence_inputs, 
-                    sentence_level_lengths if self.FLAGS.spad=='post' else None,
+                    sentence_level_lengths,
+                    pad=self.FLAGS.spad,
                     scope=scope)
             
             else:
-                rnn_sent = (DeepBiRNN_v1 if self.FLAGS.spad=='post' else DeepBiRNN) if self.FLAGS.bidirectional else DeepRNN
+                #rnn_sent = (DeepBiRNN_v1 if self.FLAGS.spad=='post' else DeepBiRNN) if self.FLAGS.bidirectional else DeepRNN
+                rnn_sent = DeepBiRNN if self.FLAGS.bidirectional else DeepRNN
                 rnn_module_sent = rnn_sent(FLAGS=self.FLAGS,
                                            seq_len=sentence_level_lengths,
                                            keep_prob=self.keep_prob,
@@ -1163,13 +1202,13 @@ class HANModel(snt.AbstractModule):
         
         
         ##################################################
-  
+        
+        #sentence_level_output.set_shape(tf.TensorShape([self.FLAGS.batch_size, dim]))
+        
         w_init, b_init = default_initializers(std=self.FLAGS.model_std, bias=self.FLAGS.model_b)
         lin_module = snt.Linear(output_size=1, initializers={ 'w':w_init, 'b':b_init })
-        
-        sentence_level_output.set_shape(tf.TensorShape([self.FLAGS.batch_size, dim]))
-        
         outputs = lin_module(sentence_level_output)
+        
         ##################################################
         
         ## tanh

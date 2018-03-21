@@ -100,6 +100,10 @@ def parse_config(config_file, parser):
     FLAGS.valid_ids = valid_ids
     FLAGS.valid_id_file = valid_id_file
     
+    ''' don't overwrite MLT test ids!!! '''
+    if FLAGS.valid_id_file.endswith('test_ids.txt'):
+        FLAGS.save_valid = False
+    
     train_ids = []
     if FLAGS.train_pat:
         train_id_file = os.path.join(FLAGS.id_dir, FLAGS.train_pat).format(FLAGS.item_id)
