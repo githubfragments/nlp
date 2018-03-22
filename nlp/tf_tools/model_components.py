@@ -211,53 +211,50 @@ def bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, sequence_length=None,
     
     return (outputs, output_states)
 
+def softmax_rescale(x, mask, dim=-1):
+    ex = tf.multiply(x, mask)
+    es = tf.reduce_sum(ex, axis=dim, keep_dims=True)
+    return ex/es
 
-def softmask(x, axis=-1, mask=None, T=None):
-    x_max = tf.reduce_max(x, axis=axis, keep_dims=True)
-    x = x - x_max
-    
-    if T!=None:
-#         if not tf.is_numeric_tensor(T):
-#             T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(T), dtype=tf.float32, trainable=True)
-        x = x/T
-    
-    ex = tf.exp(x)
-    
-    if mask!=None:
-        ex = tf.multiply(ex, mask)
-        
-    es = tf.reduce_sum(ex, axis=axis, keep_dims=True)
-    
-#     if mask!=None:
-#         ez = tf.cast(tf.reduce_sum(mask, axis=-1, keep_dims=True)==0, tf.float32)
-#         es = es + ez
+def task_specific_attention(inputs, output_size,
+                            initializer=layers.xavier_initializer(),
+                            activation_fn=tf.tanh, scope=None):
 
-#     ez = tf.cast( tf.equal( es, tf.constant( 0, dtype=tf.float32 ) ), tf.float32)
-#     es = es + ez
-    
-    ret = ex/es
-    
-    return ret#, ex, es, ez
+    assert len(inputs.get_shape()) == 3 and inputs.get_shape()[-1].value is not None
 
-def softmask2(x, mask=None, axis=-1):
     z = {}
-    
-    #output_shape = tf.cast( [ word_bs, tf.shape(word_level_output)[-1]] , tf.int64 )
-    output_shape = tf.cast( tf.shape(x), tf.int64 )
-    
-    idx = tf.where(mask>0)
-    x_sps = tf.gather_nd(x, idx)
-    
-    y_sps = tf.nn.softmax(x_sps, dim=1)
-    
-    y = tf.scatter_nd(indices=idx,
-                      updates=y_sps,
-                      shape=output_shape)
-    
-    z['idx'] = idx
-    z['x_sps'] = x_sps
-    
-    return y, z
+    with tf.variable_scope(scope or 'attention') as scope:
+        attention_context_vector = tf.get_variable(name='attention_context_vector',
+                                                   shape=[output_size],
+                                                   initializer=initializer,
+                                                   dtype=tf.float32)
+        input_projection = layers.fully_connected(inputs, output_size,
+                                                  activation_fn=activation_fn,
+                                                  scope=scope)
+        
+        keep_dims=False
+        vector_attn = tf.reduce_sum(tf.multiply(input_projection, attention_context_vector), axis=2, keep_dims=keep_dims)
+        mask = tf.cast(tf.abs(tf.reduce_sum(input_projection, axis=2, keep_dims=keep_dims))>0, tf.float32)
+        
+        #################################################################
+        ''' softmax '''
+        attention_weights = tf.nn.softmax(vector_attn, dim=1)
+        #attention_weights = tf.contrib.sparsemax.sparsemax(vector_attn)
+        
+        ## rescale softmax (mask)
+        attention_weights = softmax_rescale(attention_weights, mask=mask, dim=1)
+        #z['attention_weights'] = attention_weights
+        
+        ######### old #######################################
+        #attention_weights = softmask(vector_attn, mask=mask)
+        #####################################################
+        
+        if not keep_dims:
+            attention_weights = tf.expand_dims( attention_weights, -1)
+        outputs = tf.reduce_sum(tf.multiply(inputs, attention_weights), axis=1)
+        
+        return outputs, z
+
 
 def task_specific_attention_test1(inputs, output_size,
                             initializer=layers.xavier_initializer(),
@@ -372,39 +369,6 @@ def task_specific_attention_test1(inputs, output_size,
         ##
         return outputs, z
 
-def task_specific_attention(inputs, output_size,
-                            initializer=layers.xavier_initializer(),
-                            activation_fn=tf.tanh, scope=None):
-
-    assert len(inputs.get_shape()) == 3 and inputs.get_shape()[-1].value is not None
-
-    z = {}
-    with tf.variable_scope(scope or 'attention') as scope:
-        attention_context_vector = tf.get_variable(name='attention_context_vector',
-                                                   shape=[output_size],
-                                                   initializer=initializer,
-                                                   dtype=tf.float32)
-        input_projection = layers.fully_connected(inputs, output_size,
-                                                  activation_fn=activation_fn,
-                                                  scope=scope)
-        
-        vector_attn = tf.reduce_sum(tf.multiply(input_projection, attention_context_vector), axis=2)
-        mask = tf.cast(tf.abs(tf.reduce_sum(input_projection, axis=2))>0, tf.float32)
-        
-        #################################################################
-        attention_weights = softmask(vector_attn, mask=mask)
-        attention_weights = tf.expand_dims(attention_weights, -1)
-
-#         attention_weights = softmask2(vector_attn, mask=mask)
-#         if U.is_sequence(attention_weights):
-#             attention_weights, z = attention_weights
-        #################################################################
-        
-        outputs = tf.reduce_sum(tf.multiply(inputs, attention_weights), axis=1)
-        
-        return outputs#, z
-
-
 def task_specific_attention_ORIGINAL(inputs, output_size,
                             initializer=layers.xavier_initializer(),
                             activation_fn=tf.tanh, scope=None):
@@ -427,3 +391,52 @@ def task_specific_attention_ORIGINAL(inputs, output_size,
         outputs = tf.reduce_sum(weighted_projection, axis=1)
 
         return outputs
+
+def softmask(x, axis=-1, mask=None, T=None):
+    x_max = tf.reduce_max(x, axis=axis, keep_dims=True)
+    x = x - x_max
+    
+    if T!=None:
+#         if not tf.is_numeric_tensor(T):
+#             T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(T), dtype=tf.float32, trainable=True)
+        x = x/T
+    
+    ex = tf.exp(x)
+    
+    if mask!=None:
+        ex = tf.multiply(ex, mask)
+        
+    es = tf.reduce_sum(ex, axis=axis, keep_dims=True)
+    
+#     if mask!=None:
+#         ez = tf.cast(tf.reduce_sum(mask, axis=-1, keep_dims=True)==0, tf.float32)
+#         es = es + ez
+
+#     ez = tf.cast( tf.equal( es, tf.constant( 0, dtype=tf.float32 ) ), tf.float32)
+#     es = es + ez
+    
+    ret = ex/es
+    
+    return ret#, ex, es, ez
+
+def softmask2(x, mask=None, axis=-1):
+    z = {}
+    
+    #output_shape = tf.cast( [ word_bs, tf.shape(word_level_output)[-1]] , tf.int64 )
+    output_shape = tf.cast( tf.shape(x), tf.int64 )
+    
+    idx = tf.where(mask>0)
+    x_sps = tf.gather_nd(x, idx)
+    
+    y_sps = tf.nn.softmax(x_sps, dim=1)
+    
+    y = tf.scatter_nd(indices=idx,
+                      updates=y_sps,
+                      shape=output_shape)
+    
+    z['x'] = x
+    z['mask'] = mask
+    z['idx'] = idx
+    z['x_sps'] = x_sps
+    
+    return y, z
