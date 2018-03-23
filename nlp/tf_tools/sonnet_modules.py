@@ -84,14 +84,18 @@ class CharEmbed(snt.AbstractModule):
                                              trainable=self._trainable,
                                              name="internal_embed")
     
-    # inputs shape = [batch_size, num_unroll_steps, max_word_length]
+    # inputs shape = [batch_size, num_word_steps, max_word_length] (num_unroll_steps)
     # inputs = char ids, output = input_embedded
+    ## or ##
+    # inputs shape = [batch_size, num_sentence_steps, num_word_steps, max_word_length]
+    # inputs = char ids, output = input_embedded
+    
     def _build(self, inputs):
         output = self._char_embedding(inputs)
         
         max_word_length = self._max_word_length
         if max_word_length==None:
-            max_word_length = tf.shape(inputs)[2]
+            max_word_length = tf.shape(inputs)[-1]
             
         output = tf.reshape(output, [-1, max_word_length, self._embed_dim])
         
@@ -130,7 +134,6 @@ class TDNN(snt.AbstractModule):
     def _build(self, inputs):
         #max_word_length = inputs.get_shape()[1]
         max_word_length = tf.shape(inputs)[1]#xxx1
-        
         embed_size = inputs.get_shape()[-1]
         
         inputs = tf.expand_dims(inputs, 1)
@@ -146,11 +149,8 @@ class TDNN(snt.AbstractModule):
                                   initializers=self._initializers,
                                   padding='VALID')
             conv = conv_fxn(inputs)
-            
             self.conv_layers.append(conv_fxn)
-
-
-
+            
             ## [batch_size x 1 x 1 x kernel_feature_size]
             
 #             pool = tf.nn.max_pool(tf.tanh(conv), 
@@ -163,9 +163,6 @@ class TDNN(snt.AbstractModule):
                                  axis=2,
                                  keep_dims=True
                                  )
-            
-            
-            
             
             layers.append(tf.squeeze(pool, [1, 2]))
             
@@ -784,7 +781,7 @@ class Aggregation(snt.AbstractModule):
         except AttributeError:
             return []
 
-
+# class Model(snt.AbstractModule):
 class FlatModel(snt.AbstractModule):
     def __init__(self,
                  FLAGS=None,
@@ -800,33 +797,43 @@ class FlatModel(snt.AbstractModule):
         self.embed_matrix = embed_matrix
         self.max_word_length = max_word_length
         self.char_vocab = char_vocab
+        self.z = {}
     
     def build(self, inputs):
-        outputs = inputs
         
         if self.embed_word:
             word_embed_module = snt.Embed(existing_vocab=self.embed_matrix, trainable=True)
-            outputs = word_embed_module(outputs)
+            outputs = word_embed_module(inputs)
         else:
             ## char embed ##
             char_embed_module = CharEmbed(vocab_size=self.char_vocab.size,#char_vocab.size,
                                           embed_dim=self.FLAGS.char_embed_size, 
                                           max_word_length=self.max_word_length,
                                           name='char_embed_b')
-            outputs = char_embed_module(outputs)
+            outputs1 = char_embed_module(inputs)
             
             ## tdnn ##
             tdnn_module = TDNN(self.FLAGS.kernel_widths, 
                                self.FLAGS.kernel_features, 
                                initializer=0, 
                                name='TDNN')
-            outputs = tdnn_module(outputs)
+            outputs2 = tdnn_module(outputs1)
             
             ## reshape ##
             num_unroll_steps = tf.shape(inputs)[1]
             reshape_module = Reshape(batch_size=self.FLAGS.batch_size,
                                      num_unroll_steps=num_unroll_steps)
-            outputs = reshape_module(outputs)
+            outputs = reshape_module(outputs2)
+            
+            #dim = outputs2.get_shape().as_list()[1]
+            #outputs = tf.reshape(outputs2, [self.FLAGS.batch_size, num_unroll_steps, dim])
+            
+            self.z['inputs'] = inputs
+            self.z['num_unroll_steps'] = num_unroll_steps
+            self.z['outputs1'] = outputs1
+            self.z['outputs2'] = outputs2
+            self.z['outputs'] = outputs
+            
             
         ##################################################
         rnn_word = (DeepBiRNN_v1 if self.FLAGS.wpad=='post' else DeepBiRNN) if self.FLAGS.bidirectional else DeepRNN
@@ -885,156 +892,23 @@ class FlatModel(snt.AbstractModule):
     def z_attn(self):
         return self.agg_module.z
 
-class HierarchModel(snt.AbstractModule):
-    def __init__(self,
-                 FLAGS=None,
-                 embed_word=True,
-                 embed_matrix=None,
-                 max_word_length=None,
-                 char_vocab=None,
-                 inputs=None,
-                 name="HierarchModel"):
-        super(HierarchModel, self).__init__(name=name)
-        self.FLAGS = FLAGS
-        self.embed_word = embed_word
-        self.embed_matrix = embed_matrix
-        self.max_word_length = max_word_length
-        self.char_vocab = char_vocab
-    
-    def build(self, inputs):
-        
-        outputs = inputs
-        
-        if self.embed_word:
-            (self.num_docs,
-             self.num_sents,
-             self.num_words) = tf.unstack(tf.shape(inputs))
-            
-            ## word embed ##
-            word_embed_module = snt.Embed(existing_vocab=self.embed_matrix, trainable=True)
-            outputs = word_embed_module(outputs)
-        else:
-            (self.num_docs,
-             self.num_sents,
-             self.num_words,
-             self.word_size) = tf.unstack(tf.shape(inputs))
-        
-            ## char embed ##
-            char_embed_module = CharEmbed(vocab_size=self.char_vocab.size,#char_vocab.size,
-                                          embed_dim=self.FLAGS.char_embed_size, 
-                                          max_word_length=self.max_word_length,
-                                          name='char_embed_b')
-            outputs = char_embed_module(outputs)
-            
-            ## tdnn ##
-            tdnn_module = TDNN(self.FLAGS.kernel_widths, 
-                               self.FLAGS.kernel_features, 
-                               initializer=0, 
-                               name='TDNN')
-            outputs = tdnn_module(outputs)
-            
-            ## reshape ##
-            num_unroll_steps = tf.shape(inputs)[1]
-            reshape_module = Reshape(batch_size=self.FLAGS.batch_size,
-                                     num_unroll_steps=num_unroll_steps)
-            outputs = reshape_module(outputs)
-            
-        ##################################################
-        #         RNN_sent = DeepRNN
-        #         if self.FLAGS.bidirectional:
-        #             RNN_sent = DeepBiRNN
-        RNN = DeepBiRNN if self.FLAGS.bidirectional else DeepRNN
-        ##################################################
-        
-        word_level_inputs = tf.reshape(outputs, [self.num_docs * self.num_sents,
-                                                 self.num_words,
-                                                 self.FLAGS.embed_dim
-                                                 ])
-        self._rnn_module_word = RNN(FLAGS=self.FLAGS)
-        word_level_outputs = self._rnn_module_word(word_level_inputs)
-        
-        self._agg_module_word = Aggregation(self.FLAGS, 
-                                            #seq_len=self._rnn_module_word.seq_len, 
-                                            final_rnn_state=self._rnn_module_word.final_rnn_state)
-        word_level_outputs = self._agg_module_word(word_level_outputs)
-        
-        ##################################################
-        
-        sent_level_inputs = tf.reshape(word_level_outputs, [self.num_docs,
-                                                            self.num_sents,
-                                                            self.FLAGS.rnn_dim
-                                                            ])
-        
-        self._rnn_module_sent = RNN(FLAGS=self.FLAGS)
-        sent_level_outputs = self._rnn_module_sent(sent_level_inputs)
-        
-        self._agg_module_sent = Aggregation(self.FLAGS, 
-                                            #seq_len=self._rnn_module.seq_len, 
-                                            final_rnn_state=self._rnn_module_sent.final_rnn_state)
-        outputs = self._agg_module_sent(sent_level_outputs)
-        
-        ##################################################
-#         dim = self.FLAGS.rnn_dim
-#         #dim = tf.shape(outputs)[-1]
-#         #dim = outputs.get_shape().as_list()[-1]
-  
-        w_init, b_init = default_initializers(std=self.FLAGS.model_std, bias=self.FLAGS.model_b)
-        lin_module = snt.Linear(output_size=1, initializers={ 'w':w_init, 'b':b_init })
-        outputs = lin_module(outputs)
-        ##################################################
-        
-        ## tanh
-        outputs = tf.nn.tanh(outputs)
-        
-        return outputs
-              
-    def _build(self, inputs):
-        outputs = self.build(inputs)
-        return outputs
-    
-    @property
-    def keep_prob(self):
-        return self.rnn_module.keep_prob
-    
-    @property
-    def seq_len(self):
-        return self.rnn_module.seq_len
-    
-    @property
-    def rnn_module(self):
-        self._ensure_is_connected()
-        return self._rnn_module_word
-     
-#     @property
-#     def final_rnn_state(self):
-#         return self.rnn_module.final_rnn_state
-#     
-#     @property
-#     def agg_module(self):
-#         self._ensure_is_connected()
-#         return self._agg_module
-#     
-#     @property
-#     def attn_outputs(self):
-#         return self.agg_module.outputs
 
-
-######################################################################################
+##############################################################################################
 ''' https://github.com/davidsvaughn/hierarchical-attention-networks/blob/master/HAN_model.py
 '''
 import tensorflow.contrib.layers as layers
 import nlp.tf_tools.model_components as mc
-# from model_components import task_specific_attention, bidirectional_rnn
 
-class HANModel(snt.AbstractModule):
+class Model(snt.AbstractModule):
+# class HANModel(snt.AbstractModule):
     def __init__(self,
                  FLAGS=None,
                  embed_word=True,
                  embed_matrix=None,
                  max_word_length=None,
                  char_vocab=None,
-                 name="HANModel"):
-        super(HANModel, self).__init__(name=name)
+                 name="Model"):
+        super(Model, self).__init__(name=name)
         self.FLAGS = FLAGS
         self.embed_word = embed_word
         self.embed_matrix = embed_matrix
@@ -1048,9 +922,12 @@ class HANModel(snt.AbstractModule):
         self.unit = FLAGS.rnn_unit
         self.forget_bias = FLAGS.forget_bias
         self.train_initial_state = FLAGS.train_initial_state
-        
     
     def build(self, inputs):
+        CELL = tf.nn.rnn_cell.GRUCell
+        #CELL = tf.nn.rnn_cell.BasicLSTMCell
+        
+        ''' SETUP '''
         self.keep_prob = tf.placeholder_with_default(1.0-abs(self.FLAGS.dropout), shape=())
         #self.seq_len = tf.placeholder(tf.int32, [self.FLAGS.batch_size])
         
@@ -1062,29 +939,61 @@ class HANModel(snt.AbstractModule):
         
         (self.document_size,
         self.sentence_size,
-        self.word_size) = tf.unstack(tf.shape(inputs))
-        
-        self.z['inputs_shape'] = tf.shape(inputs)
-        
-        ## word embed ##
-        word_embed_module = snt.Embed(existing_vocab=self.embed_matrix, trainable=True)
-        inputs_embedded = word_embed_module(inputs)
- 
-        ##########################################################
-        CELL = tf.nn.rnn_cell.GRUCell
-        #CELL = tf.nn.rnn_cell.BasicLSTMCell
-        
-        ##### word_level #####
+        self.word_size) = tf.unstack(tf.shape(inputs))[:3]
         
         word_bs = self.document_size * self.sentence_size
+        char_bs = self.document_size * self.sentence_size * self.word_size
         
-        word_level_inputs = tf.reshape(
-            inputs_embedded, 
-            [word_bs, self.word_size, self.FLAGS.embed_dim])
-
         word_level_lengths = tf.reshape(self.word_lengths, [word_bs])
         
-        ##################
+        ############################################################
+        
+        ''' EMBEDDING (word/char) '''
+        if self.embed_word:
+            word_embed_module = snt.Embed(existing_vocab=self.embed_matrix, trainable=True)
+            outputs = word_embed_module(inputs)
+            outputs = tf.reshape(outputs, [word_bs, self.word_size, self.FLAGS.embed_dim])
+            
+        else:
+            ## char embed ##
+            char_embed_module = CharEmbed(vocab_size=self.char_vocab.size,#char_vocab.size,
+                                          embed_dim=self.FLAGS.char_embed_size, 
+                                          max_word_length=self.max_word_length,
+                                          name='char_embed_b')
+            outputs = char_embed_module(inputs)
+            
+            ######################################################
+            ''' gather '''
+            bool_idx =  tf.not_equal( tf.reduce_max( tf.reshape(inputs, [-1, self.max_word_length]), axis=-1), tf.constant( 0, dtype=tf.int32 ))
+            idx = tf.cast( tf.where(bool_idx), tf.int32 )
+            outputs = tf.gather_nd(outputs, idx)
+            
+            ######################################################
+            
+            ## tdnn ##
+            tdnn_module = TDNN(self.FLAGS.kernel_widths, 
+                               self.FLAGS.kernel_features, 
+                               initializer=0, 
+                               name='TDNN')
+            outputs = tdnn_module(outputs)
+            dim = outputs.get_shape().as_list()[-1]#dim = tf.shape(outputs)[-1]
+            
+            ######################################################
+            ''' scatter '''
+            output_shape = tf.cast( [ char_bs, dim ] , tf.int32 )
+            outputs = tf.scatter_nd(indices=idx,
+                                    updates=outputs,
+                                    shape=output_shape)
+            
+            ######################################################
+            
+            ## reshape ##
+            outputs = tf.reshape(outputs, [word_bs, self.word_size, dim])
+        
+        ##########################################################
+        
+        ##### word_level #####
+        word_level_inputs = outputs
         
         if self.FLAGS.sparse_words:
             sps_idx = tf.where(word_level_lengths>0)

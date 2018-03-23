@@ -178,6 +178,8 @@ class adict(dict):
 
 def ps(x, s):
     print('{} : {}'.format(s, x.shape))
+    #print('{} : {}'.format(s, tf.shape(x)))
+    #print('{} : {}'.format(s, x.get_shape().as_list())
     
 def softmask(x, axis=-1, mask=None):
     x_max = tf.reduce_max(x, axis=axis, keep_dims=True)
