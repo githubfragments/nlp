@@ -35,6 +35,8 @@ def bidirectional_rnn(cell_fw, cell_bw,
                 scope=scope))
           
         outputs = tf.concat((fw_outputs, bw_outputs), 2)
+        
+        tf.summary.histogram('{}_outputs'.format('bidirectional_rnn'), outputs)
 
         def concatenate_state(fw_state, bw_state):
             if isinstance(fw_state, LSTMStateTuple):
@@ -165,6 +167,13 @@ def bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, sequence_length=None,
     if not _like_rnncell(cell_bw):
         raise TypeError("cell_bw must be an instance of RNNCell")
     
+    def _reverse(input_, seq_lengths, seq_dim, batch_dim):
+        if seq_lengths is not None:
+            #return array_ops.reverse_sequence(input=input_, seq_lengths=seq_lengths, seq_dim=seq_dim, batch_dim=batch_dim)
+            return padded_reverse(input_, seq_lengths, batch_dim=batch_dim, seq_dim=seq_dim, pad=pad)
+        else:
+            return array_ops.reverse(input_, axis=[seq_dim])
+            
     with vs.variable_scope(scope or "bidirectional_rnn"):
         
         rnn_seq_length = sequence_length if pad=='post' else None
@@ -185,12 +194,12 @@ def bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, sequence_length=None,
             time_dim = 0
             batch_dim = 1
 
-        def _reverse(input_, seq_lengths, seq_dim, batch_dim):
-            if seq_lengths is not None:
-                #return array_ops.reverse_sequence(input=input_, seq_lengths=seq_lengths, seq_dim=seq_dim, batch_dim=batch_dim)
-                return padded_reverse(input_, seq_lengths, batch_dim=batch_dim, seq_dim=seq_dim, pad=pad)
-            else:
-                return array_ops.reverse(input_, axis=[seq_dim])
+#         def _reverse(input_, seq_lengths, seq_dim, batch_dim):
+#             if seq_lengths is not None:
+#                 #return array_ops.reverse_sequence(input=input_, seq_lengths=seq_lengths, seq_dim=seq_dim, batch_dim=batch_dim)
+#                 return padded_reverse(input_, seq_lengths, batch_dim=batch_dim, seq_dim=seq_dim, pad=pad)
+#             else:
+#                 return array_ops.reverse(input_, axis=[seq_dim])
 
         with vs.variable_scope("bw") as bw_scope:
             inputs_reverse = _reverse(
@@ -202,9 +211,9 @@ def bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, sequence_length=None,
                 parallel_iterations=parallel_iterations, swap_memory=swap_memory,
                 time_major=time_major, scope=bw_scope)
 
-    output_bw = _reverse(
-        tmp, seq_lengths=sequence_length,
-        seq_dim=time_dim, batch_dim=batch_dim)
+            output_bw = _reverse(
+                tmp, seq_lengths=sequence_length,
+                seq_dim=time_dim, batch_dim=batch_dim)
 
     outputs = (output_fw, output_bw)
     output_states = (output_state_fw, output_state_bw)
@@ -213,7 +222,12 @@ def bidirectional_dynamic_rnn(cell_fw, cell_bw, inputs, sequence_length=None,
 
 def softmax_rescale(x, mask, dim=-1):
     ex = tf.multiply(x, mask)
-    es = tf.reduce_sum(ex, axis=dim, keep_dims=True)
+    es = tf.reduce_sum(ex, axis=dim, keepdims=True)
+    
+    ## fix div by 0
+    ez = tf.cast( tf.equal( es, tf.constant( 0, dtype=tf.float32 ) ), tf.float32)
+    es = es + ez
+
     return ex/es
 
 def task_specific_attention(inputs, output_size,
@@ -232,13 +246,13 @@ def task_specific_attention(inputs, output_size,
                                                   activation_fn=activation_fn,
                                                   scope=scope)
         
-        keep_dims=False
-        vector_attn = tf.reduce_sum(tf.multiply(input_projection, attention_context_vector), axis=2, keep_dims=keep_dims)
-        mask = tf.cast(tf.abs(tf.reduce_sum(input_projection, axis=2, keep_dims=keep_dims))>0, tf.float32)
+        keepdims=False
+        vector_attn = tf.reduce_sum(tf.multiply(input_projection, attention_context_vector), axis=2, keepdims=keepdims)
+        mask = tf.cast(tf.abs(tf.reduce_sum(input_projection, axis=2, keepdims=keepdims))>0, tf.float32)
         
         #################################################################
         ''' softmax '''
-        attention_weights = tf.nn.softmax(vector_attn, dim=1)
+        attention_weights = tf.nn.softmax(vector_attn, axis=1)
         #attention_weights = tf.contrib.sparsemax.sparsemax(vector_attn)
         
         ## rescale softmax (mask)
@@ -249,11 +263,13 @@ def task_specific_attention(inputs, output_size,
         #attention_weights = softmask(vector_attn, mask=mask)
         #####################################################
         
-        if not keep_dims:
+        if not keepdims:
             attention_weights = tf.expand_dims( attention_weights, -1)
         outputs = tf.reduce_sum(tf.multiply(inputs, attention_weights), axis=1)
         
-        return outputs, z
+        tf.summary.histogram('{}_outputs'.format('task_specific_attention'), outputs)
+        
+        return outputs#, z
 
 
 def task_specific_attention_test1(inputs, output_size,
@@ -288,7 +304,7 @@ def task_specific_attention_test1(inputs, output_size,
 
         ''' softmax '''
         ## original (softmax) ##
-#         vector_attn = tf.reduce_sum(tf.multiply(input_projection, attention_context_vector), axis=2, keep_dims=True)
+#         vector_attn = tf.reduce_sum(tf.multiply(input_projection, attention_context_vector), axis=2, keepdims=True)
 #         attention_weights = tf.nn.softmax(vector_attn, dim=1)
 
         ## softmask ##
@@ -384,7 +400,7 @@ def task_specific_attention_ORIGINAL(inputs, output_size,
                                                   activation_fn=activation_fn,
                                                   scope=scope)
 
-        vector_attn = tf.reduce_sum(tf.multiply(input_projection, attention_context_vector), axis=2, keep_dims=True)
+        vector_attn = tf.reduce_sum(tf.multiply(input_projection, attention_context_vector), axis=2, keepdims=True)
         attention_weights = tf.nn.softmax(vector_attn, dim=1)
         
         weighted_projection = tf.multiply(input_projection, attention_weights)
@@ -393,7 +409,7 @@ def task_specific_attention_ORIGINAL(inputs, output_size,
         return outputs
 
 def softmask(x, axis=-1, mask=None, T=None):
-    x_max = tf.reduce_max(x, axis=axis, keep_dims=True)
+    x_max = tf.reduce_max(x, axis=axis, keepdims=True)
     x = x - x_max
     
     if T!=None:
@@ -406,14 +422,15 @@ def softmask(x, axis=-1, mask=None, T=None):
     if mask!=None:
         ex = tf.multiply(ex, mask)
         
-    es = tf.reduce_sum(ex, axis=axis, keep_dims=True)
+    es = tf.reduce_sum(ex, axis=axis, keepdims=True)
     
 #     if mask!=None:
 #         ez = tf.cast(tf.reduce_sum(mask, axis=-1, keep_dims=True)==0, tf.float32)
 #         es = es + ez
 
-#     ez = tf.cast( tf.equal( es, tf.constant( 0, dtype=tf.float32 ) ), tf.float32)
-#     es = es + ez
+    ## fix div by 0
+    ez = tf.cast( tf.equal( es, tf.constant( 0, dtype=tf.float32 ) ), tf.float32)
+    es = es + ez
     
     ret = ex/es
     

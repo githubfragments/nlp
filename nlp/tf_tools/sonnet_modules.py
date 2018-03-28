@@ -29,12 +29,17 @@ from nlp.ran.ran_cell import RANCell
 from nlp.tensorflow_with_latest_papers import rnn_cell_modern
 from nlp.rhn.rhn import RHNCell2 as RHNCell
 
-from nlp.rnn_cells.lru import LRUCell
-
 from nlp.rnn_cells.MultiplicativeLSTM import MultiplicativeLSTMCell
 
-from nlp.hyper.tf_layer_norm import HyperLnLSTMCell
+from nlp.rnn_cells.sru import SRUCell
+# from nlp.rnn_cells.sru2 import SRUCell
+# from nlp.rnn_cells.sru3 import SRUCell
+
+# from nlp.rnn_cells.lru import LRUCell
+
+# from nlp.hyper.tf_layer_norm import HyperLnLSTMCell
 from tensorflow.python.framework.tensor_shape import TensorShape
+from tensorflow.python.ops import variable_scope as vs
 
 
 '''
@@ -161,7 +166,7 @@ class TDNN(snt.AbstractModule):
             # https://stackoverflow.com/questions/43574076/tensorflow-maxpool-with-dynamic-ksize#xxx2
             pool = tf.reduce_max(tf.tanh(conv),
                                  axis=2,
-                                 keep_dims=True
+                                 keepdims=True
                                  )
             
             layers.append(tf.squeeze(pool, [1, 2]))
@@ -290,6 +295,9 @@ def rnn_unit(args):
         kwargs = { 'depth' : args.FLAGS.rhn_highway_layers }
     elif args.unit=='lru':
         rnn = LRUCell
+    elif args.unit=='sru':
+        rnn = SRUCell
+        #kwargs = { 'state_is_tuple':False }
     elif args.unit=='hlstm':
         rnn = HyperLnLSTMCell
         kwargs = {'is_layer_norm':True,
@@ -488,6 +496,8 @@ class DeepBiRNN(snt.AbstractModule):
         
         outputs = tf.concat([fwd_outputs, bwd_outputs], axis=2)
         
+        tf.summary.histogram('{}_outputs'.format(self.name), outputs)
+        
         return outputs
     
     @property
@@ -603,8 +613,8 @@ def mellowmax(x, axis=-1, omega=0.01, mask=None):
     if mask!=None:
         ex = tf.multiply(ex, mask)
     
-    n = tf.reduce_sum(mask, axis=axis, keep_dims=True)
-    ans = (tf.log(tf.reduce_sum(ex, axis=axis, keep_dims=True)) - tf.log(n)) / omega
+    n = tf.reduce_sum(mask, axis=axis, keepdims=True)
+    ans = (tf.log(tf.reduce_sum(ex, axis=axis, keepdims=True)) - tf.log(n)) / omega
     
     return ans
 
@@ -677,16 +687,18 @@ class Attention(snt.AbstractModule):
         #beta = tf.tensordot(v, u, axes=1)
         beta = tf.einsum('ijk,k->ij', v, u)
         
-        ''' softmax '''
         #T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(1.0), dtype=tf.float32, trainable=True)
-        alpha = mc.softmask(beta, mask=mask)
+        
+        ''' softmax '''
+#         alpha = mc.softmask(beta, mask=mask)
+        
+        alpha = tf.nn.softmax(beta, axis=1); 
+        with vs.variable_scope("alpha"): alpha = mc.softmax_rescale(alpha, mask=mask, dim=1)
         
         ''' attn pooling '''
         ##output = tf.reduce_sum(inputs * tf.expand_dims(alpha, -1), 1)
-        w = inputs * tf.expand_dims(alpha, -1)
-        #w = v * tf.expand_dims(alpha, -1)
         
-        output = tf.reduce_sum(w, 1)
+        w = inputs * tf.expand_dims(alpha, -1); output = tf.reduce_sum(w, 1)
         
         #############################
         self._z = {}
@@ -698,15 +710,6 @@ class Attention(snt.AbstractModule):
 #         self._z['alpha'] = alpha
 #         self._z['output'] = output
 #         self._z['mask'] = mask
-                
-#         ps(inputs, 'inputs')
-#         ps(u, 'u')
-#         ps(v, 'v')
-#         ps(w, 'w')
-#         ps(mask, 'mask')
-#         ps(beta, 'beta')
-#         ps(alpha, 'alpha')
-#         ps(output, 'output')
         
         return output
     
@@ -1033,10 +1036,10 @@ class Model(snt.AbstractModule):
             
             # attn #
             with tf.variable_scope('attention') as scope:
-                word_level_output = mc.task_specific_attention(word_encoder_output, self.FLAGS.att_size, scope=scope)
-                if U.is_sequence(word_level_output): word_level_output, self.z_word_attn = word_level_output
+#                 word_level_output = mc.task_specific_attention(word_encoder_output, self.FLAGS.att_size, scope=scope)
+#                 if U.is_sequence(word_level_output): word_level_output, self.z_word_attn = word_level_output
                 ## or ##
-#                 attn_word = Attention(self.FLAGS); word_level_output = attn_word(word_encoder_output)
+                attn_word = Attention(self.FLAGS); word_level_output = attn_word(word_encoder_output)
             
             # dropout #
             with tf.variable_scope('dropout'):
@@ -1098,10 +1101,10 @@ class Model(snt.AbstractModule):
             
             # attn #
             with tf.variable_scope('attention') as scope:
-                sentence_level_output = mc.task_specific_attention(sentence_encoder_output, self.FLAGS.att_size, scope=scope)
-                if U.is_sequence(sentence_level_output): sentence_level_output, self.z_sent_attn = sentence_level_output
+#                 sentence_level_output = mc.task_specific_attention(sentence_encoder_output, self.FLAGS.att_size, scope=scope)
+#                 if U.is_sequence(sentence_level_output): sentence_level_output, self.z_sent_attn = sentence_level_output
                 ## or ##
-#                 attn_sent = Attention(self.FLAGS); sentence_level_output = attn_sent(sentence_encoder_output)
+                attn_sent = Attention(self.FLAGS); sentence_level_output = attn_sent(sentence_encoder_output)
             
             # dropout #
             with tf.variable_scope('dropout'):
