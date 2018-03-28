@@ -489,11 +489,12 @@ class DeepBiRNN(snt.AbstractModule):
         
         with tf.variable_scope('fwd'):
             self.fwd_rnn = DeepRNN(FLAGS=self.FLAGS, seq_len=self._seq_len, keep_prob=self._keep_prob, pad=self.pad)
+            fwd_outputs = self.fwd_rnn(inputs)
+            
         with tf.variable_scope('bwd'):
             self.bwd_rnn = DeepRNN(FLAGS=self.FLAGS, seq_len=self._seq_len, keep_prob=self._keep_prob, pad=self.pad)
-            
-        fwd_outputs = self.fwd_rnn(inputs)
-        bwd_outputs = self.bwd_rnn(padded_reverse(inputs, self._seq_len, pad=self.pad))
+            bwd_outputs = self.bwd_rnn(padded_reverse(inputs, self._seq_len, pad=self.pad))
+            bwd_outputs = padded_reverse(bwd_outputs, self._seq_len, pad=self.pad)
         
         outputs = tf.concat([fwd_outputs, bwd_outputs], axis=2)
         
@@ -663,68 +664,6 @@ def default_initializers(std=None, bias=None):
         
     return w_init, b_init
 
-# class Attention(snt.AbstractModule):
-#     def __init__(self, FLAGS,
-#                  final_rnn_state=None,
-#                  name="attention"):
-#         super(Attention, self).__init__(name=name)
-#         self.FLAGS = FLAGS
-#         self.final_rnn_state = final_rnn_state
-#     
-#     ''' https://github.com/ilivans/tf-rnn-attention/blob/master/attention.py
-#     '''
-#     def build(self, inputs):
-#         A = self.FLAGS.att_size
-#         D = inputs.shape[-1].value # D value - hidden size of the RNN layer
-#         mask = tf.cast(tf.abs(tf.reduce_sum(inputs, axis=2))>0, tf.float32)
-#         
-#         w_init, b_init = default_initializers(std=self.FLAGS.attn_std, bias=self.FLAGS.attn_b)
-#         lin_module = Linear(output_dim=A, w_init=w_init, b_init=b_init)
-#         u = tf.get_variable('u', shape=[A], initializer=w_init)
-#             
-#         ''' Linear Layer '''
-#         v = tf.tanh(lin_module(inputs))
-#         
-#         #beta = tf.tensordot(v, u, axes=1)
-#         beta = tf.einsum('ijk,k->ij', v, u)
-#         
-#         #T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(1.0), dtype=tf.float32, trainable=True)
-#         
-#         ''' softmax '''
-# #         alpha = mc.softmask(beta, mask=mask)
-#         
-#         alpha = tf.nn.softmax(beta, axis=1); 
-#         with vs.variable_scope("alpha"): alpha = mc.softmax_rescale(alpha, mask=mask, dim=1)
-#         
-#         ''' attn pooling '''
-#         ##output = tf.reduce_sum(inputs * tf.expand_dims(alpha, -1), 1)
-#         
-#         w = inputs * tf.expand_dims(alpha, -1); output = tf.reduce_sum(w, 1)
-#         
-#         #############################
-#         self._z = {}
-# #         self._z['inputs'] = inputs
-# #         self._z['u'] = u
-# #         self._z['v'] = v
-# #         self._z['w'] = w
-# #         self._z['beta'] = beta
-# #         self._z['alpha'] = alpha
-# #         self._z['output'] = output
-# #         self._z['mask'] = mask
-#         
-#         return output
-#     
-#     def _build(self, inputs):
-#         return self.build(inputs)
-#     
-#     @property
-#     def z(self):
-#         self._ensure_is_connected()
-#         try:
-#             return self._z
-#         except AttributeError:
-#             return []
-
 ''' simple sonnet wrapper for aggregation'''
 class Aggregation(snt.AbstractModule):
     def __init__(self,
@@ -746,7 +685,7 @@ class Aggregation(snt.AbstractModule):
         if self.FLAGS.att_type>-1:
             
             if self.FLAGS.att_type==0:
-                self._attn_module = Attention(self.FLAGS, final_rnn_state=self.final_rnn_state)
+                self._attn_module = Attention(self.FLAGS)#, final_rnn_state=self.final_rnn_state)
             elif self.FLAGS.att_type==1:
                 self._attn_module = Attn1(self.FLAGS)
             elif self.FLAGS.att_type==2:
@@ -756,8 +695,7 @@ class Aggregation(snt.AbstractModule):
             
         elif self.FLAGS.mean_pool: ## use mean pooled rnn states
             if self.seq_len==None:
-                #output = tf.reduce_mean(inputs, axis=1)
-                output = tf.reduce_mean(inputs, axis=-2)
+                output = tf.reduce_mean(inputs, axis=-2)#output = tf.reduce_mean(inputs, axis=1)
             else:
                 output = self.dynamic_mean(inputs, self.seq_len)
             
@@ -814,33 +752,53 @@ class FlatModel(snt.AbstractModule):
                                           embed_dim=self.FLAGS.char_embed_size, 
                                           max_word_length=self.max_word_length,
                                           name='char_embed_b')
-            outputs1 = char_embed_module(inputs)
+            outputs = char_embed_module(inputs)
+            
+            ######################################################
+#             ''' gather '''
+#             bool_idx =  tf.not_equal( tf.reduce_max( tf.reshape(inputs, [-1, self.max_word_length]), axis=-1), tf.constant( 0, dtype=tf.int32 ))
+#             idx = tf.cast( tf.where(bool_idx), tf.int32 )
+#             outputs = tf.gather_nd(outputs, idx)
+            ######################################################
             
             ## tdnn ##
             tdnn_module = TDNN(self.FLAGS.kernel_widths, 
                                self.FLAGS.kernel_features, 
                                initializer=0, 
                                name='TDNN')
-            outputs2 = tdnn_module(outputs1)
+            outputs = tdnn_module(outputs)
+            dim = outputs.get_shape().as_list()[-1]#dim = tf.shape(outputs)[-1]
             
+            ######################################################
+#             ''' scatter '''
+#             output_shape = tf.cast( [ char_bs, dim ] , tf.int32 )
+#             outputs = tf.scatter_nd(indices=idx,
+#                                     updates=outputs,
+#                                     shape=output_shape)
+            ######################################################
+            ## reshape ##
+#             outputs = tf.reshape(outputs, [word_bs, self.word_size, dim])
+            
+            ######################################################
             ## reshape ##
             num_unroll_steps = tf.shape(inputs)[1]
             reshape_module = Reshape(batch_size=self.FLAGS.batch_size,
                                      num_unroll_steps=num_unroll_steps)
-            outputs = reshape_module(outputs2)
+            outputs = reshape_module(outputs)
             
             #dim = outputs2.get_shape().as_list()[1]
             #outputs = tf.reshape(outputs2, [self.FLAGS.batch_size, num_unroll_steps, dim])
             
-            self.z['inputs'] = inputs
-            self.z['num_unroll_steps'] = num_unroll_steps
-            self.z['outputs1'] = outputs1
-            self.z['outputs2'] = outputs2
-            self.z['outputs'] = outputs
+#             self.z['inputs'] = inputs
+#             self.z['num_unroll_steps'] = num_unroll_steps
+#             self.z['outputs1'] = outputs1
+#             self.z['outputs2'] = outputs2
+#             self.z['outputs'] = outputs
             
             
         ##################################################
-        rnn_word = (DeepBiRNN_v1 if self.FLAGS.wpad=='post' else DeepBiRNN) if self.FLAGS.bidirectional else DeepRNN
+        #rnn_word = (DeepBiRNN_v1 if self.FLAGS.wpad=='post' else DeepBiRNN) if self.FLAGS.bidirectional else DeepRNN
+        rnn_word = DeepBiRNN if self.FLAGS.bidirectional else DeepRNN
         self._rnn_module = rnn_word(FLAGS=self.FLAGS, pad=self.FLAGS.wpad)
         outputs = self._rnn_module(outputs)
         
@@ -903,16 +861,16 @@ class FlatModel(snt.AbstractModule):
 import tensorflow.contrib.layers as layers
 import nlp.tf_tools.model_components as mc
 
-class Model(snt.AbstractModule):
-# class HANModel(snt.AbstractModule):
+# class Model(snt.AbstractModule):
+class HANModel(snt.AbstractModule):
     def __init__(self,
                  FLAGS=None,
                  embed_word=True,
                  embed_matrix=None,
                  max_word_length=None,
                  char_vocab=None,
-                 name="Model"):
-        super(Model, self).__init__(name=name)
+                 name="HANModel"):
+        super(HANModel, self).__init__(name=name)
         self.FLAGS = FLAGS
         self.embed_word = embed_word
         self.embed_matrix = embed_matrix

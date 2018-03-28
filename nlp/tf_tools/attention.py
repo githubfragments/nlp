@@ -15,6 +15,7 @@ from nlp.util.utils import ps
 
 from tensorflow.python.framework.tensor_shape import TensorShape
 from tensorflow.python.ops import variable_scope as vs
+import tensorflow.contrib.layers as layers
 
 def softmax_rescale(x, mask, axis=-1):
     u = tf.multiply(x, mask)
@@ -38,9 +39,14 @@ def default_initializers(std=None, bias=None):
     return w_init, b_init
 
 class Linear(snt.AbstractModule):
-    def __init__(self, output_dim, w_init=None, b_init=None, name="linear"):
+    def __init__(self, output_dim,
+                 act=tf.tanh,
+                 w_init=None, 
+                 b_init=None, 
+                 name="linear"):
         super(Linear, self).__init__(name=name)
         self.output_dim = output_dim
+        self.act = act
         self.name = name
         self.w_init = w_init
         self.b_init = b_init
@@ -63,17 +69,20 @@ class Linear(snt.AbstractModule):
         
         ''' multiply '''
         output = tf.einsum(q, inputs, W) + b
-        #tf.summary.histogram('{}_output'.format(self.name), output)
+        
+        ''' activation '''
+        if self.act is not None:
+            output = self.act(output)
+      
         return output
 
+''' https://github.com/ilivans/tf-rnn-attention/blob/master/attention.py '''
 class Attention(snt.AbstractModule):
     def __init__(self, FLAGS,
                  name="attention"):
         super(Attention, self).__init__(name=name)
         self.FLAGS = FLAGS
     
-    ''' https://github.com/ilivans/tf-rnn-attention/blob/master/attention.py
-    '''
     def build(self, inputs):
         A = self.FLAGS.att_size
         D = inputs.shape[-1].value # D value - hidden size of the RNN layer
@@ -84,17 +93,16 @@ class Attention(snt.AbstractModule):
         u = tf.get_variable('u', shape=[A], initializer=w_init)
             
         ''' Linear Layer '''
-        v = tf.tanh(lin_module(inputs))
+        v = lin_module(inputs)#tf.tanh(lin_module(inputs))
         
-        #beta = tf.tensordot(v, u, axes=1)
-        beta = tf.einsum('ijk,k->ij', v, u)
+        beta = tf.einsum('ijk,k->ij', v, u)#beta = tf.tensordot(v, u, axes=1)
         
         #T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(1.0), dtype=tf.float32, trainable=True)
         
         ''' softmax '''
         with vs.variable_scope("alpha"):
             #alpha = mc.softmask(beta, mask=mask)
-            alpha = tf.nn.softmax(beta, axis=1); 
+            alpha = tf.nn.softmax(beta, axis=1) 
             alpha = softmax_rescale(alpha, mask=mask, axis=1)
         
         ''' apply attn weights '''
@@ -124,3 +132,54 @@ class Attention(snt.AbstractModule):
             return self._z
         except AttributeError:
             return []
+        
+def task_specific_attention(inputs, output_size,
+                            initializer=layers.xavier_initializer(),
+                            activation_fn=tf.tanh, scope=None):
+    assert len(inputs.get_shape()) == 3 and inputs.get_shape()[-1].value is not None
+    
+    with tf.variable_scope(scope or 'attention') as scope:
+        attention_context_vector = tf.get_variable(name='attention_context_vector',
+                                                   shape=[output_size],
+                                                   initializer=initializer,
+                                                   dtype=tf.float32)
+        input_projection = layers.fully_connected(inputs, output_size,
+                                                  activation_fn=activation_fn,
+                                                  scope=scope)
+        
+        keepdims=False
+        vector_attn = tf.reduce_sum(tf.multiply(input_projection, attention_context_vector), axis=2, keepdims=keepdims)
+        mask = tf.cast(tf.abs(tf.reduce_sum(input_projection, axis=2, keepdims=keepdims))>0, tf.float32)
+        
+        ''' softmax '''
+        attention_weights = tf.nn.softmax(vector_attn, axis=1)
+        #attention_weights = tf.contrib.sparsemax.sparsemax(vector_attn)
+        
+        attention_weights = softmax_rescale(attention_weights, mask=mask, dim=1)
+        
+        if not keepdims:
+            attention_weights = tf.expand_dims( attention_weights, -1)
+        outputs = tf.reduce_sum(tf.multiply(inputs, attention_weights), axis=1)
+        
+        tf.summary.histogram('{}_outputs'.format('task_specific_attention'), outputs)
+        
+        return outputs
+
+
+''' softmax with 0-padding re-normalization '''  
+def softmask(x, axis=-1, mask=None, T=None):
+    x_max = tf.reduce_max(x, axis=axis, keepdims=True)
+    x = x - x_max
+    if T!=None:
+#         if not tf.is_numeric_tensor(T):
+#             T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(T), dtype=tf.float32, trainable=True)
+        x = x/T
+    
+    ex = tf.exp(x)
+    if mask!=None: ex = tf.multiply(ex, mask)
+    es = tf.reduce_sum(ex, axis=axis, keepdims=True)
+
+    ## fix div by 0
+    es = es + tf.cast( tf.equal( es, tf.constant( 0, dtype=tf.float32 ) ), tf.float32)
+    #     if mask!=None: es = es + tf.cast(tf.reduce_sum(mask, axis=-1, keep_dims=True)==0, tf.float32)
+    return ex/es
