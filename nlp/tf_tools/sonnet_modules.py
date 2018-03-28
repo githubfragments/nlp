@@ -10,6 +10,7 @@ import numpy as np
 import tensorflow as tf
 import sonnet as snt
 
+from nlp.tf_tools.attention import Attention
 import nlp.tf_tools.model_components as mc
 
 from nlp.util import utils as U
@@ -662,67 +663,67 @@ def default_initializers(std=None, bias=None):
         
     return w_init, b_init
 
-class Attention(snt.AbstractModule):
-    def __init__(self, FLAGS,
-                 final_rnn_state=None,
-                 name="attention"):
-        super(Attention, self).__init__(name=name)
-        self.FLAGS = FLAGS
-        self.final_rnn_state = final_rnn_state
-    
-    ''' https://github.com/ilivans/tf-rnn-attention/blob/master/attention.py
-    '''
-    def build(self, inputs):
-        A = self.FLAGS.att_size
-        D = inputs.shape[-1].value # D value - hidden size of the RNN layer
-        mask = tf.cast(tf.abs(tf.reduce_sum(inputs, axis=2))>0, tf.float32)
-        
-        w_init, b_init = default_initializers(std=self.FLAGS.attn_std, bias=self.FLAGS.attn_b)
-        lin_module = Linear(output_dim=A, w_init=w_init, b_init=b_init)
-        u = tf.get_variable('u', shape=[A], initializer=w_init)
-            
-        ''' Linear Layer '''
-        v = tf.tanh(lin_module(inputs))
-        
-        #beta = tf.tensordot(v, u, axes=1)
-        beta = tf.einsum('ijk,k->ij', v, u)
-        
-        #T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(1.0), dtype=tf.float32, trainable=True)
-        
-        ''' softmax '''
-#         alpha = mc.softmask(beta, mask=mask)
-        
-        alpha = tf.nn.softmax(beta, axis=1); 
-        with vs.variable_scope("alpha"): alpha = mc.softmax_rescale(alpha, mask=mask, dim=1)
-        
-        ''' attn pooling '''
-        ##output = tf.reduce_sum(inputs * tf.expand_dims(alpha, -1), 1)
-        
-        w = inputs * tf.expand_dims(alpha, -1); output = tf.reduce_sum(w, 1)
-        
-        #############################
-        self._z = {}
-#         self._z['inputs'] = inputs
-#         self._z['u'] = u
-#         self._z['v'] = v
-#         self._z['w'] = w
-#         self._z['beta'] = beta
-#         self._z['alpha'] = alpha
-#         self._z['output'] = output
-#         self._z['mask'] = mask
-        
-        return output
-    
-    def _build(self, inputs):
-        return self.build(inputs)
-    
-    @property
-    def z(self):
-        self._ensure_is_connected()
-        try:
-            return self._z
-        except AttributeError:
-            return []
+# class Attention(snt.AbstractModule):
+#     def __init__(self, FLAGS,
+#                  final_rnn_state=None,
+#                  name="attention"):
+#         super(Attention, self).__init__(name=name)
+#         self.FLAGS = FLAGS
+#         self.final_rnn_state = final_rnn_state
+#     
+#     ''' https://github.com/ilivans/tf-rnn-attention/blob/master/attention.py
+#     '''
+#     def build(self, inputs):
+#         A = self.FLAGS.att_size
+#         D = inputs.shape[-1].value # D value - hidden size of the RNN layer
+#         mask = tf.cast(tf.abs(tf.reduce_sum(inputs, axis=2))>0, tf.float32)
+#         
+#         w_init, b_init = default_initializers(std=self.FLAGS.attn_std, bias=self.FLAGS.attn_b)
+#         lin_module = Linear(output_dim=A, w_init=w_init, b_init=b_init)
+#         u = tf.get_variable('u', shape=[A], initializer=w_init)
+#             
+#         ''' Linear Layer '''
+#         v = tf.tanh(lin_module(inputs))
+#         
+#         #beta = tf.tensordot(v, u, axes=1)
+#         beta = tf.einsum('ijk,k->ij', v, u)
+#         
+#         #T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(1.0), dtype=tf.float32, trainable=True)
+#         
+#         ''' softmax '''
+# #         alpha = mc.softmask(beta, mask=mask)
+#         
+#         alpha = tf.nn.softmax(beta, axis=1); 
+#         with vs.variable_scope("alpha"): alpha = mc.softmax_rescale(alpha, mask=mask, dim=1)
+#         
+#         ''' attn pooling '''
+#         ##output = tf.reduce_sum(inputs * tf.expand_dims(alpha, -1), 1)
+#         
+#         w = inputs * tf.expand_dims(alpha, -1); output = tf.reduce_sum(w, 1)
+#         
+#         #############################
+#         self._z = {}
+# #         self._z['inputs'] = inputs
+# #         self._z['u'] = u
+# #         self._z['v'] = v
+# #         self._z['w'] = w
+# #         self._z['beta'] = beta
+# #         self._z['alpha'] = alpha
+# #         self._z['output'] = output
+# #         self._z['mask'] = mask
+#         
+#         return output
+#     
+#     def _build(self, inputs):
+#         return self.build(inputs)
+#     
+#     @property
+#     def z(self):
+#         self._ensure_is_connected()
+#         try:
+#             return self._z
+#         except AttributeError:
+#             return []
 
 ''' simple sonnet wrapper for aggregation'''
 class Aggregation(snt.AbstractModule):
