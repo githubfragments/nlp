@@ -861,16 +861,16 @@ class FlatModel(snt.AbstractModule):
 import tensorflow.contrib.layers as layers
 import nlp.tf_tools.model_components as mc
 
-class Model(snt.AbstractModule):
-# class HANModel(snt.AbstractModule):
+# class Model(snt.AbstractModule):
+class HANModel(snt.AbstractModule):
     def __init__(self,
                  FLAGS=None,
                  embed_word=True,
                  embed_matrix=None,
                  max_word_length=None,
                  char_vocab=None,
-                 name="Model"):
-        super(Model, self).__init__(name=name)
+                 name="HANModel"):
+        super(HANModel, self).__init__(name=name)
         self.FLAGS = FLAGS
         self.embed_word = embed_word
         self.embed_matrix = embed_matrix
