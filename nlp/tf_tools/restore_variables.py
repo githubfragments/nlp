@@ -71,9 +71,11 @@ def rename_all(checkpoint_dir, rmap, dry_run=False):
             sess.run(tf.global_variables_initializer())
             saver.save(sess, checkpoint.model_checkpoint_path)
 
-def rename(chkpt_dir, varnames_to_restore, dry_run=False):
+def rename(chkpt_dir, variables_to_restore, dry_run=False):
 
-    varnames_to_restore = [re.sub(':[0-9]$', '', v) for v in varnames_to_restore]
+    # [var.name for var in variables_to_restore]
+    varnames_to_restore = [re.sub(':[0-9]$', '', var.name) for var in variables_to_restore]
+    
     chkpt_vars = [var_name for var_name, _ in tf.contrib.framework.list_variables(chkpt_dir)]
     vmap, rmap = map_rename_vars(varnames_to_restore, chkpt_vars)
 #     print_map(vmap)
@@ -106,12 +108,23 @@ def rename(chkpt_dir, varnames_to_restore, dry_run=False):
              
     print(chkpt_dir)
 
-def rename_vars(varnames_to_restore, src_chkpt_dir, dst_chkpt_dir=None):
+def rename_vars(variables_to_restore, src_chkpt_dir, dst_chkpt_dir=None):
     if dst_chkpt_dir is None:
         dst_chkpt_dir = get_temp_dir()
     copy_chkpt(src_chkpt_dir, dst_chkpt_dir)
-    rename(dst_chkpt_dir, varnames_to_restore)
+    rename(dst_chkpt_dir, variables_to_restore)
     return dst_chkpt_dir
+
+
+def restore_vars(session, variables_to_restore, chkpt_dir):
+    with tempfile.TemporaryDirectory() as tmp_chkpt_dir:
+        rename_vars(variables_to_restore, 
+                    src_chkpt_dir=chkpt_dir,
+                    dst_chkpt_dir=tmp_chkpt_dir)
+        saver = tf.train.Saver(variables_to_restore)
+        restore_chkpt = tf.train.latest_checkpoint(tmp_chkpt_dir)
+        saver.restore(session, restore_chkpt)
+
 
 def test1():
 #     src_chkpt_dir = '/home/david/code/python/tf-ats/tf-ats/lm_char/mod2_600-15'

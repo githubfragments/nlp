@@ -90,14 +90,12 @@ class Attention(snt.AbstractModule):
         
         w_init, b_init = default_initializers(std=self.FLAGS.attn_std, bias=self.FLAGS.attn_b)
         lin_module = Linear(output_dim=A, w_init=w_init, b_init=b_init)
-        u = tf.get_variable('u', shape=[A], initializer=w_init)
+        q = tf.get_variable('q', shape=[A], initializer=w_init)
             
         ''' Linear Layer '''
-        v = lin_module(inputs)#tf.tanh(lin_module(inputs))
+        k = lin_module(inputs)
         
-        beta = tf.einsum('ijk,k->ij', v, u)#beta = tf.tensordot(v, u, axes=1)
-        
-        #T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(1.0), dtype=tf.float32, trainable=True)
+        beta = tf.einsum('ijk,k->ij', k, q)#beta = tf.tensordot(k, q, axes=1)
         
         ''' softmax '''
         with vs.variable_scope("alpha"):
@@ -109,11 +107,13 @@ class Attention(snt.AbstractModule):
         #w = inputs * tf.expand_dims(alpha, -1); output = tf.reduce_sum(w, 1)
         output = tf.reduce_sum(inputs * tf.expand_dims(alpha, -1), 1)
         
+        ''' inputs == v '''
+        
         #############################
         self._z = {}
 #         self._z['inputs'] = inputs
-#         self._z['u'] = u
-#         self._z['v'] = v
+#         self._z['q'] = q
+#         self._z['k'] = k
 #         self._z['w'] = w
 #         self._z['beta'] = beta
 #         self._z['alpha'] = alpha
@@ -170,15 +170,14 @@ def task_specific_attention(inputs, output_size,
 def softmask(x, axis=-1, mask=None, T=None):
     x_max = tf.reduce_max(x, axis=axis, keepdims=True)
     x = x - x_max
-    if T!=None:
+#     if T!=None:
 #         if not tf.is_numeric_tensor(T):
 #             T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(T), dtype=tf.float32, trainable=True)
-        x = x/T
-    
+#             T = tf.get_variable('T', shape=[1], initializer=tf.constant_initializer(1.0), dtype=tf.float32, trainable=True)
+#         x = x/T
     ex = tf.exp(x)
     if mask!=None: ex = tf.multiply(ex, mask)
     es = tf.reduce_sum(ex, axis=axis, keepdims=True)
-
     ## fix div by 0
     es = es + tf.cast( tf.equal( es, tf.constant( 0, dtype=tf.float32 ) ), tf.float32)
     #     if mask!=None: es = es + tf.cast(tf.reduce_sum(mask, axis=-1, keep_dims=True)==0, tf.float32)
