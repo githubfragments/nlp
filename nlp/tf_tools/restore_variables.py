@@ -7,9 +7,12 @@ import numpy as np
 import tensorflow as tf
 from distutils.dir_util import copy_tree
 
-def print_map(m):
+def print_map(m, name=None):
+    if name:
+        print(name)
     for k in m.keys():
         print('{}\t=> {}'.format(k, m[k]))
+    print('')
     
 def get_temp_dir():
     return tempfile.mkdtemp()
@@ -78,11 +81,13 @@ def rename(chkpt_dir, variables_to_restore, dry_run=False):
     
     chkpt_vars = [var_name for var_name, _ in tf.contrib.framework.list_variables(chkpt_dir)]
     vmap, rmap = map_rename_vars(varnames_to_restore, chkpt_vars)
-#     print_map(vmap)
-#     print_map(rmap)
+#     print_map(rmap,'rmap')
+#     print_map(vmap,'vmap')
 
     if len(rmap)!=1:
         print('ERROR: no unique variable rename mapping!')
+        print_map(rmap,'rmap')
+        print_map(vmap,'vmap')
         sys.exit()
         return
     
