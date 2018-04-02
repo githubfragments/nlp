@@ -132,6 +132,62 @@ class Attention(snt.AbstractModule):
             return self._z
         except AttributeError:
             return []
+ 
+class Attention2D(snt.AbstractModule):
+    def __init__(self, FLAGS,
+                 name="Attention2D"):
+        super(Attention2D, self).__init__(name=name)
+        self.FLAGS = FLAGS
+    
+    def build(self, inputs):
+        A = self.FLAGS.att_size
+        R = self.FLAGS.attn_depth
+        D = inputs.shape[-1].value # D value - hidden size of the RNN layer
+        mask = tf.cast(tf.abs(tf.reduce_sum(inputs, axis=2))>0, tf.float32)
+        
+        ''' Linear Projection Layer (Key, Ws1) '''
+        w_init, b_init = default_initializers(std=self.FLAGS.attn_std, bias=self.FLAGS.attn_b)
+        lin_module = Linear(output_dim=A, w_init=w_init, b_init=b_init)
+        K = lin_module(inputs)
+        
+        ''' Query '''
+        Q = tf.get_variable('Q', shape=[A,R], initializer=w_init)
+        beta = tf.einsum('bij,jk->bik', K, Q)
+        
+        ''' softmax '''
+        with vs.variable_scope("alpha"):
+            alpha = tf.nn.softmax(beta, axis=1)
+            alpha = softmax_rescale(alpha, mask=mask, axis=1)
+        
+        ''' apply attn weights '''
+        #w = inputs * tf.expand_dims(alpha, -1); output = tf.reduce_sum(w, 1)
+        output = tf.reduce_sum(inputs * tf.expand_dims(alpha, -1), 1)
+        
+        ''' inputs == v '''
+        
+        #############################
+        self._z = {}
+#         self._z['inputs'] = inputs
+#         self._z['q'] = q
+#         self._z['k'] = k
+#         self._z['w'] = w
+#         self._z['beta'] = beta
+#         self._z['alpha'] = alpha
+#         self._z['output'] = output
+#         self._z['mask'] = mask
+        
+        return output
+    
+    def _build(self, inputs):
+        return self.build(inputs)
+    
+    @property
+    def z(self):
+        self._ensure_is_connected()
+        try:
+            return self._z
+        except AttributeError:
+            return [] 
         
 def task_specific_attention(inputs, output_size,
                             initializer=layers.xavier_initializer(),

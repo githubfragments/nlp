@@ -11,6 +11,8 @@ import tensorflow as tf
 import sonnet as snt
 
 from nlp.tf_tools.attention import Attention
+from nlp.tf_tools.attention import Attention2D
+
 import nlp.tf_tools.model_components as mc
 
 from nlp.util import utils as U
@@ -806,16 +808,16 @@ class FlatModel(snt.AbstractModule):
             outputs = word_embed_module(inputs)
             
         else:
-            output_shape = [self.FLAGS.batch_size, tf.shape(inputs)[1], sum(self.FLAGS.kernel_features)]
+            #output_shape = [self.FLAGS.batch_size, tf.shape(inputs)[1], sum(self.FLAGS.kernel_features)]
             outputs = char_cnn_embedding(inputs,
                                          char_vocab_size=self.char_vocab.size,
                                          char_embed_size=self.FLAGS.char_embed_size,
                                          kernel_widths=self.FLAGS.kernel_widths,
                                          kernel_features=self.FLAGS.kernel_features,
-                                         sparse=False,
-                                         output_shape=output_shape,
+                                         sparse=True,
+                                         #output_shape=output_shape,
                                          #stack_output_dims=2,
-                                         max_word_length=self.max_word_length,
+                                         #max_word_length=self.max_word_length,
                                          )
 
             #######################################################
@@ -990,6 +992,7 @@ class HANModel(snt.AbstractModule):
         ##### word_level #####
         word_level_inputs = outputs
         
+        #### GATHER_ND ##########################
         if self.FLAGS.sparse_words:
             sps_idx = tf.where(word_level_lengths>0)
             word_level_inputs = tf.gather_nd(word_level_inputs, sps_idx)
@@ -997,8 +1000,6 @@ class HANModel(snt.AbstractModule):
     #         self.z['sps_idx'] = sps_idx
     #         self.z['word_level_inputs'] = word_level_inputs
     #         self.z['word_level_lengths'] = word_level_lengths
-        
-        #### GATHER_ND ##########################
         
         with tf.variable_scope('word') as scope:
             
@@ -1031,7 +1032,8 @@ class HANModel(snt.AbstractModule):
 #                 word_level_output = mc.task_specific_attention(word_encoder_output, self.FLAGS.att_size, scope=scope)
 #                 if U.is_sequence(word_level_output): word_level_output, self.z_word_attn = word_level_output
                 ## or ##
-                attn_word = Attention(self.FLAGS); word_level_output = attn_word(word_encoder_output)
+                self.FLAGS
+                attn_word = Attention2D(self.FLAGS); word_level_output = attn_word(word_encoder_output)
             
             # dropout #
             with tf.variable_scope('dropout'):
@@ -1040,7 +1042,6 @@ class HANModel(snt.AbstractModule):
                     keep_prob=self.keep_prob)
         
         #### SCATTER_ND #########################
-        
         if self.FLAGS.sparse_words:
             output_shape = tf.cast( [ word_bs, tf.shape(word_level_output)[-1]] , tf.int64 )
             word_level_output = tf.scatter_nd(indices=sps_idx,
