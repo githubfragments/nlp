@@ -4,7 +4,6 @@ import configargparse
 import pprint
 import json
 
-from nlp.util.utils import mkdirs, adict
 from nlp.util import utils as U
 
 ## namespace->dict
@@ -13,7 +12,7 @@ def ns2dict(args):
 
 ## dict->namespace
 def dict2ns(dict):
-    return adict(dict)
+    return U.adict(dict)
 
 def dump_flags_to_json(flags, file):
     with open(file, 'w') as f:
@@ -36,7 +35,7 @@ def save_local_config(flags, verbose=True):
     abs_config = os.path.abspath(flags.config)
     if os.path.realpath(loc_file) != os.path.realpath(abs_config):
         if not os.path.exists(flags.chkpt_dir):
-            mkdirs(FLAGS.chkpt_dir)
+            U.mkdirs(FLAGS.chkpt_dir)
             if verbose:
                 print('Created checkpoint directory: {}'.format(os.path.abspath(flags.chkpt_dir)))
         dump_config(flags, loc_file)

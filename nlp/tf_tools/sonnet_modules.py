@@ -1032,8 +1032,8 @@ class HANModel(snt.AbstractModule):
 #                 word_level_output = mc.task_specific_attention(word_encoder_output, self.FLAGS.att_size, scope=scope)
 #                 if U.is_sequence(word_level_output): word_level_output, self.z_word_attn = word_level_output
                 ## or ##
-                self.FLAGS
-                attn_word = Attention2D(self.FLAGS); word_level_output = attn_word(word_encoder_output)
+                attn_word = Attention(self.FLAGS); word_level_output = attn_word(word_encoder_output)
+#                 attn_word = Attention2D(self.FLAGS); word_level_output = attn_word(word_encoder_output)
             
             # dropout #
             with tf.variable_scope('dropout'):
