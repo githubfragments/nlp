@@ -72,15 +72,38 @@ def batch(inputs):
             sentence_sizes[i, j] = sentence_sizes_[i][j]
             for k, word in enumerate(sentence):
                 b[i, j, k] = word
-
     return b, document_sizes, sentence_sizes
-
+    
+def slyce(x,i,j,pad='post'):
+    if pad=='post':
+        return x[i][:j]
+    else:
+        return x[i][-j:]
+        
+def tensor2list(b,sl,wl,p):
+    z = []
+    (n,m,o) = b.shape
+    for i in range(n):
+        zz=[]
+        s = slyce(wl,i,sl[i],p[0])
+        k = 0 if p[0]=='post' else m-sl[i]
+        for j in range(len(s)):
+            t = list(slyce(b[i],j+k,s[j],p[1]))
+            zz.append(t)
+        z.append(zz)
+    return z
+        
+def list2list(x,f):
+    if isinstance(x, (list,)):
+        return map(lambda y: list2list(y,f), x)
+    return f(x)
+    
 a = [1,2,3,4]
 b = [[1,2],[3,4,5,6],[7,8,9]]
 c = [[[1,2,3,4,5],[1,2,3,4,5,6,7]],[[1,2,3],[1,2],[1,2],[1,2]],[[1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,9]]]
 
 x=c
-p=(None,'post','post')
+p=(None,'pre','post')
 
 shape = max_lens(x)
 (doc_size, sent_size, word_size) = shape
@@ -88,3 +111,9 @@ shape = max_lens(x)
 b, (sent_lens, word_lens) = pad_sequences(x,p)
 
 word_level_lengths = np.reshape(word_lens, [doc_size * sent_size])
+
+wl = word_lens
+sl = sent_lens
+z = tensor2list(b,sl,wl,p[1:])
+
+zz = slyce(wl,0,sl[0],p[1])
