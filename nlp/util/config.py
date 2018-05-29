@@ -78,6 +78,9 @@ def parse_config(config_file, parser):
     FLAGS.chkpt_dir = U.make_abs(FLAGS.chkpt_dir)
     FLAGS.rand_seed = U.seed_random(FLAGS.rand_seed)
     
+    if FLAGS.id_dir is None:
+        FLAGS.id_dir = FLAGS.data_dir
+    
     if FLAGS.att_size>0:
         FLAGS.mean_pool = False
         if FLAGS.att_type<0:
