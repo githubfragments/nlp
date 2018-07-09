@@ -6,6 +6,8 @@ import numpy as np
 import urllib2
 import pprint
 import zipfile
+import matplotlib.pyplot as plt
+import pandas as pd
 
 def check_header(filename):
     with open(filename) as f:
@@ -26,24 +28,20 @@ def strip_non_ascii(string):
     return str(''.join(stripped))
        
 class Glove:
-    """
-    Glove -- loads in GloVe pretrained models as provided on the Stanford NLP GloVe 
-    website. Does cosine similarity nearest neighbors.
-    """
-    def __init__(self, glove_path=None, max_entries=20000, num_components=200):
+    def __init__(self, embed_path=None, max_entries=20000, dim=200):
         self.wd_to_i = {}
         self.i_to_wd = {}
         self.v = None
-        if glove_path is not None:
-            self.load_glove(glove_path, 
+        if embed_path is not None:
+            self.load_glove(embed_path, 
                             max_entries=max_entries, 
-                            num_components=num_components)
+                            dim=dim)
     
-    def load_glove(self, glove_path, gz=False, max_entries=20000, num_components=200):
-        self.v = np.empty((max_entries, num_components))
-        has_header = check_header(glove_path)
+    def load_glove(self, embed_path, gz=False, max_entries=20000, dim=200):
+        self.v = np.empty((max_entries, dim))
+        has_header = check_header(embed_path)
         i=-1
-        with codecs.open(glove_path, "r", "utf-8") as f:
+        with codecs.open(embed_path, "r", "utf-8") as f:
             for line in f:
                 if has_header:
                     has_header=False
@@ -53,74 +51,82 @@ class Glove:
                     break
                 if i % 10000 == 0:
                     print(i)
-                i+=1
-                word = strip_non_ascii(line.split(None, 1)[0])
+                try:
+                    word = strip_non_ascii(line.split(None, 1)[0])
+                    self.v[i,:] = tuple(float(j) for j in line.split()[1:])
+                except (ValueError,IndexError), e:
+                    continue
                 self.wd_to_i[word] = i
                 self.i_to_wd[i] = word
-                self.v[i,:] = tuple(float(j) for j in line.split()[1:])             
-                    
-    def load_glove_OLD(self, glove_path, gz=False, max_entries=20000, num_components=200):
-        """Load GloVe vectors into memory from txt file. Returns a dict where the keys are 
-        the headwords from the model and the values are the n-dimensional vectors
-        representing the word.
-    
-        Arguments
-        glove_path: path to glove vectors (txt file or gzipped txt file)
-        gz: is path to a gzipped file (default True)"""
-
-        self.v = np.empty((max_entries, num_components))
-        if gz:
-            with gzip.open(glove_path, "r") as glove_file:
-                utfreader = codecs.getreader("utf-8")
-                for i, glove_entry in enumerate(utfreader(glove_file)):
-                    if i >= max_entries:
-                        break
-                    self.split_and_store(glove_entry, i)
-        else:
-            with codecs.open(glove_path, "r", "utf-8") as glove_file:
-                for i, glove_entry in enumerate(glove_file):
-                    if i >= max_entries:
-                        #print "Stopping: ", i, max_entries
-                        break
-                    self.split_and_store(glove_entry, i)
-
-
-    def split_and_store(self, glove_entry, i):
-        glove_components = glove_entry.split(' ')
-        self.wd_to_i[glove_components[0]] = i
-        self.i_to_wd[i] = glove_components[0]
-        try:
-            self.v[i,:] = tuple(float(i) for i in glove_components[1:])
-        except (ValueError, IndexError) as e:
-            print('poop')
-            #print "Bad entry", i, ", GloVe components: \"", glove_components, "\""
+                i+=1             
 
     def nearest_to_vec(self, vec, n=10):
-        similarities = np.dot(self.v, vec) / (np.linalg.norm(self.v,axis=1) * 
-                                                np.linalg.norm(vec))
-        # sort similarities largest to smallest
-        simil_i = np.argsort(-similarities)
-        return [(self.i_to_wd[i], similarities[i]) for i in simil_i[:n]]
+        sims = np.dot(self.v,vec)/(np.linalg.norm(self.v,axis=1)*np.linalg.norm(vec))
+        simil_i = np.argsort(-sims)
+        return [(self.i_to_wd[i], sims[i]) for i in simil_i[:n]]
     
     def nearest_euclidean(self, vec, n=10):
         sse = np.sum((self.v-vec) ** 2, axis=1)
         distances = np.sqrt(sse)
-        # sort distances smallest to largest
         simil_i = np.argsort(distances)
         return [(self.i_to_wd[i], distances[i]) for i in simil_i[:n]]
-    
-    def get_nearest(self, keyword, n=10):
-        kw_vector = self.v[self.wd_to_i[keyword]]
-        return self.nearest_to_vec(kw_vector, n)
         
-    def syn(self,w,n=10):
-        [print(i[0]) for i in self.get_nearest(w,n=n)]
+    def cos(self, vec, v=None):
+        eps=1e-15
+        if v is None: v=self.v
+        x = 1.0-np.dot(v,vec)/(np.linalg.norm(v,axis=1)*np.linalg.norm(vec))
+        x[x<eps]=0
+        x[x>1.0]=1.0
+        return x
     
-    def sims(self, w, ws):
-        v = self.v[self.wd_to_i[w]]
-        vs = np.array([self.v[self.wd_to_i[w]] for w in ws])
-        sims = np.dot(vs,v)/(np.linalg.norm(vs,axis=1)*np.linalg.norm(v))
-        return sims
+    def euc(self, vec, v=None):
+        if v is None: v=self.v
+        sse = np.sum((v-vec) ** 2, axis=1)
+        distances = np.sqrt(sse)
+        return distances
+        
+    def dist(self, vec, v=None, f='cos'):
+        if f is 'cos': return self.cos(vec,v=v)
+        else: return self.euc(vec,v=v)
+        
+    def nearest(self, vec, n=10, f='cos'):
+        dist = self.dist(vec,f=f)
+        simil_i = np.argsort(dist)
+        return [(self.i_to_wd[i], dist[i]) for i in simil_i[:n]]
+    
+    def get_nearest(self, keyword, n=10, f='cos'):
+        kw_vector = self.v[self.wd_to_i[keyword]]
+        return self.nearest(kw_vector, n=n, f=f)
+        
+    def syn(self,w,n=10,f='cos'):
+        ans = self.get_nearest(w,n=n,f=f)
+        print('\n{}'.format(w))
+        self.pprint(ans)
+        return ans
+    
+    def sims(self, ws, w=None, f='cos',s=''):
+        if w is None:
+            w=ws[0]
+            ws=ws[1:]
+        vec = self.v[self.wd_to_i[w]]
+        v = np.array([self.v[self.wd_to_i[ww]] for ww in ws])
+        dist = self.dist(vec, v=v, f=f)
+        ans = zip(ws, dist)
+        print('\n{}{}'.format(w,s))
+        j=self.pprint(ans)
+        return ans,j
+        
+    def pprint(self, x):
+        m=min(zip(*x)[1])
+        i=0
+        for r in x:
+            s=''
+            if m==r[1]:
+                s='**'
+                j=i
+            i+=1
+            print('{1:0.4g}\t{0}{2}'.format(r[0],r[1],s))
+        return j
     
     def plot_vec(self,vec):
         plt.bar(range(0, len(vec)), vec)
@@ -143,18 +149,69 @@ class Glove:
         else:
             raise IndexError()
 ###############################################################################
-            
-dim=300
-vocab_size=100000
-glove_folder = '/home/david/data/embed'
 
-glove_path = os.path.join(glove_folder, 'glove.6B.{}d.txt'.format(dim))
-myg = Glove(glove_path, max_entries=vocab_size, num_components=dim)
+embed_folder = '/home/david/data/embed'
+
+dim=300
+#corp=6; vocab_size=200000
+#corp=42; vocab_size=120000
+corp=840; vocab_size=340000
+fn = 'glove.{}B.{}d.txt'.format(corp, dim)
+
+#dim=300; vocab_size=300000; fn='wiki.en.vec'
+#dim=300; vocab_size=400000; fn='w2v/GoogleNews-vectors-negative300.txt'
+
+###############################################################################
+def scan_words():
+    x = 3
+
+def syn_test():
+    vocab_size=340000
+    myg = Glove(os.path.join(embed_folder,fn), max_entries=vocab_size, dim=dim)
+    
+    fxn='cos'
+    #fxn='euc'
+    
+    path = '/media/david/Elements/AIG/items_for_psychometrics_use/txt'
+    low = 'lower_vr_S.txt'
+    mid = 'middle_vr_S.txt'
+    files = [low,mid]
+    
+    n,m=0,0
+    x,y=[],[]
+    for f in files:
+        print(f)
+        df = pd.read_csv(os.path.join(path,f), sep='\t')
+        for i, row in df.iterrows():
+            r = row['RASCH']
+            #if not r<100: continue
+            ws = [row['prompt'],row['key'],row['distractor1'],row['distractor2'],row['distractor3']]
+            try:
+                sims,j=myg.sims(ws,f=fxn,s='\t{}'.format(r))
+            except KeyError:
+                continue
+            m+=1; n+=(1 if j==0 else 0)
+            #x.append(r); y.append(sims[0][1])
+    
+    print('\n{0}/{1} = {2:0.4g}%'.format(n,m,100*float(n)/float(m)))
+    
+    #r = np.corrcoef(np.array(x),np.array(y))[1][0]
+
+###############################################################################
+            
 
 #######
-myg.syn('apparently')
-myg.syn('affront')
 
-w = 'adamant'
-ws = ['oblique','obscure','obsolete','obstinate']
-sims = myg.sims(w,ws)
+#myg.syn('apparently',f=f)
+#myg.syn('affront',f=f)
+
+#pprint.pprint(myg[myg['talkin']-myg['talking']+myg['going']][:5])
+
+#######
+#myg.sims(['adamant','oblique','obscure','obsolete','obstinate'],f=f)
+#myg.sims(['despair','anguish','abuse','deception','tragedy'],f=f)
+#myg.sims(['peculiar','remarkable','dignified','familiar','superior'],f=f)
+
+if __name__ == '__main__':
+    syn_test()
+    
